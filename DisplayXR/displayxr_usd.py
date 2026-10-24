@@ -1,10 +1,15 @@
 """Export Slicer's visible segmentations and models to USD (ASCII .usda) for
 NVIDIA Omniverse (USD Composer and the other Kit apps).
 
-Plain text writer: no USD libraries needed inside Slicer. Units stay Slicer's
-(RAS millimetres) and are declared on the stage (metersPerUnit 0.001,
-upAxis Z), so Kit scales and orients the anatomy correctly when it opens or
-references the file. Each segment/model becomes a Mesh with normals, a
+Plain text writer: no USD libraries needed inside Slicer. Two layouts:
+
+* omniverse=True (default): Kit's default stage layout, Y-up centimetres,
+  baked into the points (RAS rotated -90 deg about X, mm -> cm). Kit does
+  not convert units or up-axis when a file is referenced by script, so this
+  drops into a default USD Composer stage upright and life size.
+* omniverse=False: Slicer's native RAS millimetres declared on the stage
+  (metersPerUnit 0.001, upAxis Z). Correct USD, but a Y-up stage that
+  references it must add the unit scale and rotateX -90 itself. Each segment/model becomes a Mesh with normals, a
 displayColor/displayOpacity and a bound UsdPreviewSurface material.
 """
 
@@ -103,12 +108,25 @@ def _floats(values, per):
     return ", ".join(parts)
 
 
-def write_usda(path, meshes, root="Slicer"):
+def _to_kit_cm(values):
+    """RAS mm (Z-up) -> Kit default (Y-up, centimetres): rotate -90 deg about X, scale 0.1."""
+    out = [0.0] * len(values)
+    out[0::3] = [v * 0.1 for v in values[0::3]]
+    out[1::3] = [v * 0.1 for v in values[2::3]]
+    out[2::3] = [-v * 0.1 for v in values[1::3]]
+    return out
+
+
+def write_usda(path, meshes, root="Slicer", omniverse=True):
     used = set()
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write("#usda 1.0\n(\n")
-        f.write(f'    defaultPrim = "{root}"\n    metersPerUnit = 0.001\n    upAxis = "Z"\n')
-        f.write('    doc = "Exported from 3D Slicer by the DisplayXR module (RAS millimetres)"\n)\n\n')
+        if omniverse:
+            f.write(f'    defaultPrim = "{root}"\n    metersPerUnit = 0.01\n    upAxis = "Y"\n')
+            f.write('    doc = "Exported from 3D Slicer by the DisplayXR module (RAS rotated to Y-up, centimetres)"\n)\n\n')
+        else:
+            f.write(f'    defaultPrim = "{root}"\n    metersPerUnit = 0.001\n    upAxis = "Z"\n')
+            f.write('    doc = "Exported from 3D Slicer by the DisplayXR module (RAS millimetres)"\n)\n\n')
         f.write(f'def Xform "{root}" (\n    kind = "component"\n)\n{{\n')
         f.write('    def Scope "Looks"\n    {\n')
         names = [_name(label, used) for label, _, _, _ in meshes]
@@ -136,7 +154,9 @@ def write_usda(path, meshes, root="Slicer"):
                 if ids.GetNumberOfIds() == 3:
                     idx.extend(ids.GetId(k) for k in range(3))
             ntri = len(idx) // 3
-            bounds = pd.GetBounds()
+            if omniverse:
+                p = _to_kit_cm(p)
+            bounds = [min(p[0::3]), max(p[0::3]), min(p[1::3]), max(p[1::3]), min(p[2::3]), max(p[2::3])]
             f.write(f'    def Mesh "{name}" (\n        prepend apiSchemas = ["MaterialBindingAPI"]\n    )\n    {{\n')
             f.write(f'        float3[] extent = [({bounds[0]:.6g}, {bounds[2]:.6g}, {bounds[4]:.6g}), '
                     f'({bounds[1]:.6g}, {bounds[3]:.6g}, {bounds[5]:.6g})]\n')
@@ -145,6 +165,8 @@ def write_usda(path, meshes, root="Slicer"):
             f.write(f'        point3f[] points = [{_floats(p, 3)}]\n')
             if nr is not None:
                 nv = [nr.GetComponent(i, c) for i in range(n) for c in range(3)]
+                if omniverse:
+                    nv = [v * 10.0 for v in _to_kit_cm(nv)]  # rotate only
                 f.write(f'        normal3f[] normals = [{_floats(nv, 3)}] (\n            interpolation = "vertex"\n        )\n')
             r, g, b = color
             f.write(f'        color3f[] primvars:displayColor = [({r:.4f}, {g:.4f}, {b:.4f})] (\n            interpolation = "constant"\n        )\n')
@@ -163,12 +185,13 @@ def default_export_dir():
     return d
 
 
-def export_scene(path=None):
-    """Write all visible segments/models; returns (path, [(label, points)])."""
+def export_scene(path=None, omniverse=True):
+    """Write all visible segments/models; returns (path, [(label, points)]).
+    omniverse=True authors Y-up centimetres (see module docstring)."""
     meshes = collect_meshes()
     if not meshes:
         raise RuntimeError("Nothing to export: show a segmentation or model in 3D first.")
     if path is None:
         scene = os.path.splitext(os.path.basename(slicer.mrmlScene.GetURL() or ""))[0] or "SlicerScene"
         path = os.path.join(default_export_dir(), scene + ".usda")
-    return path, write_usda(path, meshes)
+    return path, write_usda(path, meshes, omniverse=omniverse)

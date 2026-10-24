@@ -30,7 +30,7 @@ runtime (v2.53) the 3D covers the whole panel instead.
 | Camera rig | `DXR_LEGACY_CAMERA_RIG` set per start: glass at the 0.6 m nominal viewer, vertical FOV = the 3D view's physical height at 0.6 m, eye separation from the Depth setting. Virtual metres map 1:1 onto the panel, so parallax is predictable: `p(z) = K·(1 − g/z)`. |
 | Depth | "Keep depth comfortable" moves the screen plane (and, when zoomed in close, the viewpoint) so the visible content stays inside the panel's comfort budget (≈0.14 % of width in front, 0.42 % behind). The panel shows the live depth. |
 | Eye tracking | Leia SR eye tracking gives motion parallax as you move your head. |
-| Omniverse | *Send to Omniverse (USD)* writes visible segments/models as `.usda` (mm, Z-up, UsdPreviewSurface) to `Documents\DisplayXR\Slicer` for USD Composer. |
+| Omniverse | *Send to Omniverse (USD)* writes visible segments/models as `.usda` (UsdPreviewSurface, vertex normals) to `Documents\DisplayXR\Slicer`. It's authored in Kit's default layout, Y-up centimetres, baked in, so it opens or references into USD Composer upright and life size without a correction transform. Kit doesn't convert units or axes on scripted references. Verified in USD Composer (Kit 110.4, RTX) 2026-10-24. `export_scene(omniverse=False)` keeps Slicer's native RAS millimetres (Z-up, metersPerUnit 0.001). Positions stay in Slicer's RAS frame, so separate exports stay registered. |
 
 All runtime/extension internals the module relies on are in
 `DisplayXR/displayxr_coupling.py` (none of them is a public contract).
