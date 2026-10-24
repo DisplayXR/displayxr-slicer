@@ -36,15 +36,10 @@ import displayxr_coupling as dxr
 BUDGET_FRONT = 0.0014
 BUDGET_BEHIND = 0.0042
 
-#: "Depth" choices: (label, parallax at infinity K as a fraction of view
-#: width, budget multiplier). K sets the eye separation for the session; the
-#: multiplier scales the comfort budget the screen-plane solver aims for.
-DEPTH_LEVELS = [
-    ("Gentle", 0.008, 0.7),
-    ("Comfortable", 0.012, 1.0),
-    ("Strong", 0.020, 1.6),
-]
-DEFAULT_DEPTH = 1
+#: Parallax at infinity (fraction of view width) at Depth 100 %. It sets the
+#: session's eye separation; the live Depth slider scales it through the
+#: runtime (DXR_HostedDepth) and the Screen plane slider moves the glass.
+K_COMFORTABLE = 0.012
 
 
 class DisplayXR(ScriptedLoadableModule):
@@ -80,14 +75,29 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
 
         form = qt.QFormLayout()
         lay.addLayout(form)
-        self.depthCombo = qt.QComboBox()
-        for name, _, _ in DEPTH_LEVELS:
-            self.depthCombo.addItem(name)
-        self.depthCombo.setCurrentIndex(self.logic.depthLevel)
-        self.depthCombo.currentIndexChanged.connect(self.onDepth)
-        self.depthCombo.setToolTip("Strength of the 3D effect. Comfortable stays inside the panel's "
-                                   "low-ghosting range. A change applies the next time 3D starts.")
-        form.addRow("Depth:", self.depthCombo)
+        import ctk
+        self.depthSlider = ctk.ctkSliderWidget()
+        self.depthSlider.minimum, self.depthSlider.maximum = 5, 200
+        self.depthSlider.singleStep = self.depthSlider.pageStep = 5
+        self.depthSlider.decimals = 0
+        self.depthSlider.suffix = " %"
+        self.depthSlider.value = self.logic.depthPercent
+        self.depthSlider.setToolTip("Strength of the 3D effect, live. 100 % stays inside the panel's\n"
+                                    "low-ghosting range; more is stronger but ghosts more.")
+        self.depthSlider.valueChanged.connect(self.logic.setDepthPercent)
+        form.addRow("Depth:", self.depthSlider)
+
+        self.planeSlider = ctk.ctkSliderWidget()
+        self.planeSlider.minimum, self.planeSlider.maximum = -50, 100
+        self.planeSlider.singleStep = self.planeSlider.pageStep = 5
+        self.planeSlider.decimals = 0
+        self.planeSlider.suffix = " %"
+        self.planeSlider.value = self.logic.planePercent
+        self.planeSlider.setToolTip("Moves the screen plane, live. 0 = automatic.\n"
+                                    "Higher: the screen plane moves farther away and more of the anatomy pops out.\n"
+                                    "Lower: it moves nearer and the anatomy sits behind the screen.")
+        self.planeSlider.valueChanged.connect(self.onPlane)
+        form.addRow("Screen plane:", self.planeSlider)
 
         self.autoPlane = qt.QCheckBox("Keep depth comfortable")
         self.autoPlane.setChecked(self.logic.autoScreenPlane)
@@ -160,9 +170,9 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
         except Exception as e:
             self.usdLabel.setText(str(e))
 
-    def onDepth(self, index):
-        self.logic.depthLevel = index
-        self.updateStatus()
+    def onPlane(self, value):
+        self.logic.planePercent = value
+        self.logic.syncCamera()
 
     def onStartStop(self):
         if self.logic.active:
@@ -196,7 +206,9 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         ScriptedLoadableModuleLogic.__init__(self)
         self.active = False
         self.error = ""
-        self.depthLevel = DEFAULT_DEPTH
+        self.depthPercent = 100.0  # live Depth slider, % of K_COMFORTABLE
+        self.planePercent = 0.0    # live Screen plane slider: glass distance +/- %
+        self._sentDepth = None
         self.autoScreenPlane = True
         self.clickThrough = True
         self.statusChanged = None
@@ -221,17 +233,16 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
 
     def depthText(self):
         if not self.active or not self.lastDepth:
-            name = DEPTH_LEVELS[self.depthLevel][0]
-            return f"Depth: {name}. Start 3D to see the depth of the current view."
+            return f"Depth {self.depthPercent:.0f} %. Start 3D to see the depth of the current view."
         front, behind, pushed, glass = self.lastDepth
-        mult = DEPTH_LEVELS[self.rig["level"]][2]
-        ok = -front <= BUDGET_FRONT * mult * 1.05 and behind <= BUDGET_BEHIND * mult * 1.05
+        ok = -front <= BUDGET_FRONT * 1.05 and behind <= BUDGET_BEHIND * 1.05
         txt = (f"In front of the screen: {-front * 100:.2f} %   Behind: {behind * 100:.2f} %\n"
                f"{'Comfortable' if ok else 'Strong'} depth · screen plane {glass:.0f} mm from the camera")
         if pushed > 0.5:
             txt += f"\nViewpoint moved back {pushed:.0f} mm to keep the depth comfortable"
-        if self.depthLevel != self.rig["level"]:
-            txt += "\nNew depth setting applies when 3D restarts"
+        now = dxr.read_hosted_depth_now(self.mainHwnd())
+        if now and abs(now[1] / self.rig["convergence"] - 1) > 0.02:
+            txt += "\nFocus was changed by another depth control: the numbers above are approximate"
         return txt
 
     def _notify(self):
@@ -301,7 +312,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         m_per_px = pw_m / pw_px
         h_m = max(h, 1) * m_per_px
         w_m = max(w, 1) * m_per_px
-        name, k, mult = DEPTH_LEVELS[self.depthLevel]
+        k = K_COMFORTABLE
         vfov = 2.0 * math.atan(h_m / 2.0 / dxr.NOMINAL_VIEWER_M)
         rig = {
             "convergenceDiopters": 1.0 / dxr.NOMINAL_VIEWER_M,
@@ -309,7 +320,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
             # eye separation so a point at infinity has parallax k of the view width
             "ipdFactor": k * w_m / dxr.IPD_M,
         }
-        return {"json": rig, "level": self.depthLevel, "vfov": vfov, "m_per_px": m_per_px,
+        return {"json": rig, "vfov": vfov, "m_per_px": m_per_px,
                 "convergence": dxr.NOMINAL_VIEWER_M}
 
     def parallaxAtInfinity(self):
@@ -390,8 +401,10 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
             cam.SetViewAngle(self._saved.pop("viewAngle"))
         try:
             dxr.clear_view_rect(self.mainHwnd())
+            dxr.clear_hosted_depth(self.mainHwnd())
         except Exception:
             pass
+        self._sentDepth = None
         self.hostedHwnd = None
         self.lastDepth = None
 
@@ -407,6 +420,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
                 h = dxr.find_hosted_window()
                 if h:
                     self.hostedHwnd = h
+                    self._applyDepth()
                     self._notify()
             if self.hostedHwnd:
                 dxr.publish_view_rect(self.mainHwnd(), *self.viewRectPx())
@@ -416,6 +430,21 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         except Exception:
             import traceback
             traceback.print_exc()
+
+    def setDepthPercent(self, value):
+        self.depthPercent = float(value)
+        self._applyDepth()
+        self._notify()
+
+    def _applyDepth(self):
+        """Live stereo strength: the runtime scales the rig's ipdFactor
+        (DXR_HostedDepth; 0 in the focus field leaves the convergence alone)."""
+        if not self.active or not self.hostedHwnd or not self.rig:
+            return
+        strength = self.rig["json"]["ipdFactor"] * self.depthPercent / 100.0
+        if strength != self._sentDepth:
+            dxr.write_hosted_depth(self.mainHwnd(), strength, 0.0)
+            self._sentDepth = strength
 
     def setClickThrough(self, on):
         self.clickThrough = on
@@ -452,8 +481,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
     def solveScreenPlane(self, focal, near, far, K):
         """Glass distance g and push-back b (world units) keeping the content's
         parallax K(1 - g/z) inside the comfort budget."""
-        mult = DEPTH_LEVELS[self.rig["level"]][2]
-        bf, bb = BUDGET_FRONT * mult, BUDGET_BEHIND * mult
+        bf, bb = BUDGET_FRONT, BUDGET_BEHIND
         c = 1.0 + bf / K          # g <= c * near   (front limit)
         a = 1.0 - bb / K          # g >= a * far    (behind limit)
         near = max(near, 1e-3 * max(focal, 1.0))
@@ -486,6 +514,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         depths = self._contentDepths(pos, dop)
         if depths and self.autoScreenPlane:
             g, b = self.solveScreenPlane(focal, depths[0], depths[1], K)
+        g *= 1.0 + self.planePercent / 100.0
         eye = [pos[n] - b * dop[n] for n in range(3)]
         s = g / self.rig["convergence"]   # world units per physical metre
 
@@ -505,10 +534,19 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
             ren.ResetCameraClippingRange()
 
         if depths:
+            # A live depth control (shared slider via DXR_HostedDepth) changes
+            # the runtime rig itself: ipdFactor scales all parallax, and the
+            # convergence moves the glass (s is unchanged). The solver keeps
+            # framing for the seeded rig; report what is actually on screen.
+            k_now, g_now = K, g
+            now = dxr.read_hosted_depth_now(self.mainHwnd())
+            if now:
+                k_now = K * now[0] / self.rig["json"]["ipdFactor"]
+                g_now = g * now[1] / self.rig["convergence"]
             n, f = depths[0] + b, depths[1] + b
-            front = K * (1.0 - g / max(n, 1e-6))
-            behind = K * (1.0 - g / max(f, 1e-6))
-            new = (front, behind, b, g)
+            front = k_now * (1.0 - g_now / max(n, 1e-6))
+            behind = k_now * (1.0 - g_now / max(f, 1e-6))
+            new = (front, behind, b, g_now)
             if self.lastDepth is None or any(abs(x - y) > 1e-4 * (1 + abs(y)) for x, y in zip(new, self.lastDepth)):
                 self.lastDepth = new
                 self._notify()

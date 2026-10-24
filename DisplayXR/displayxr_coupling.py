@@ -26,6 +26,12 @@ HOSTED_WINDOW_CLASS = "DisplayXRD3D11"
 #: Window property on the app's main window: the viewer rect in physical client
 #: pixels, packed x | y<<16 | w<<32 | h<<48. Re-read by the runtime every 250 ms.
 HOSTED_VIEW_RECT_PROP = "DXR_HostedViewRect"
+#: Live depth for embedded apps (runtime draft #2350): a helper (the shared
+#: depth slider) writes DXR_HostedDepth on the main window; the runtime
+#: publishes the values in effect as DXR_HostedDepthNow. Packing:
+#: absolute rig ipdFactor x 1000 | convergence mm << 16.
+HOSTED_DEPTH_PROP = "DXR_HostedDepth"
+HOSTED_DEPTH_NOW_PROP = "DXR_HostedDepthNow"
 #: Per-exe atlas capture trigger in %TEMP% (exe basename without ".exe").
 ATLAS_TRIGGER = "displayxr_atlas_trigger.{exe}{suffix}"
 ATLAS_OUTPUT = "displayxr_atlas.{exe}{suffix}.png"
@@ -105,6 +111,27 @@ def publish_view_rect(main_hwnd, x, y, w, h):
     x, y, w, h = (max(0, min(int(v), 0xFFFF)) for v in (x, y, w, h))
     packed = x | (y << 16) | (w << 32) | (h << 48)
     _u32.SetPropW(main_hwnd, HOSTED_VIEW_RECT_PROP, ctypes.c_void_p(packed))
+
+
+def read_hosted_depth_now(main_hwnd):
+    """(ipdFactor, convergence_m) the runtime is using, or None."""
+    _u32.GetPropW.argtypes = [wt.HWND, wt.LPCWSTR]
+    _u32.GetPropW.restype = ctypes.c_void_p
+    v = _u32.GetPropW(main_hwnd, HOSTED_DEPTH_NOW_PROP) or 0
+    strength, conv = (v & 0xFFFF) / 1000.0, ((v >> 16) & 0xFFFF) / 1000.0
+    return (strength, conv) if strength > 0 and conv > 0 else None
+
+
+def write_hosted_depth(main_hwnd, ipd_factor, convergence_m):
+    """Ask the runtime for a live rig change; 0 leaves that field alone."""
+    s = max(1, min(int(round(ipd_factor * 1000)), 0xFFFF)) if ipd_factor > 0 else 0
+    c = max(1, min(int(round(convergence_m * 1000)), 0xFFFF)) if convergence_m > 0 else 0
+    _u32.SetPropW(main_hwnd, HOSTED_DEPTH_PROP, ctypes.c_void_p(s | (c << 16)))
+
+
+def clear_hosted_depth(main_hwnd):
+    if _u32 and main_hwnd:
+        _u32.RemovePropW(main_hwnd, HOSTED_DEPTH_PROP)
 
 
 def clear_view_rect(main_hwnd):
