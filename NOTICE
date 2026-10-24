@@ -1,0 +1,10 @@
+DisplayXR for 3D Slicer
+Copyright (c) 2026 The DisplayXR Project and its contributors
+
+This product includes software developed by the DisplayXR project contributors.
+It is licensed under the Apache License, Version 2.0; see the LICENSE file for
+the full text.
+
+It uses, but does not include, 3D Slicer (BSD-style Slicer License) and the
+SlicerVirtualReality extension (Apache-2.0). Sample data (e.g. CTChest) is
+downloaded by Slicer's SampleData module at run time and is not redistributed.
