@@ -14,4 +14,6 @@ rem runtime build while that is unreleased; released v2.53 shows the 3D full pan
 set "DEVRT=%USERPROFILE%\dev\displayxr-runtime\_package\bin\DisplayXR_win64.json"
 if exist "%DEVRT%" (set "XR_RUNTIME_JSON=%DEVRT%") else (set "XR_RUNTIME_JSON=C:\Program Files\DisplayXR\Runtime\DisplayXR_win64.json")
 set "DXR_HOSTED_WINDOW=auto"
+rem Mouse over the 3D goes to Slicer (runtime hosted/input-passthrough; ignored by older runtimes)
+set "DXR_HOSTED_INPUT=app"
 start "" "%SLICER%" --additional-module-paths "%HERE%DisplayXR" --python-code "slicer.util.selectModule('DisplayXR'); slicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutConventionalWidescreenView)" %*

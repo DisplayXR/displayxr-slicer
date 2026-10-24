@@ -18,6 +18,9 @@ import os
 ENV_LEGACY_CAMERA_RIG = "DXR_LEGACY_CAMERA_RIG"
 #: auto = embed the runtime's 3D window over the app's main window (#2332).
 ENV_HOSTED_WINDOW = "DXR_HOSTED_WINDOW"
+#: app = the embedded 3D window posts mouse messages to the app's window
+#: (runtime branch hosted/input-passthrough). Read once per process.
+ENV_HOSTED_INPUT = "DXR_HOSTED_INPUT"
 #: Window class of the runtime-owned 3D window (D3D11/GL native compositor).
 HOSTED_WINDOW_CLASS = "DisplayXRD3D11"
 #: Window property on the app's main window: the viewer rect in physical client
@@ -107,6 +110,13 @@ def publish_view_rect(main_hwnd, x, y, w, h):
 def clear_view_rect(main_hwnd):
     if _u32 and main_hwnd:
         _u32.RemovePropW(main_hwnd, HOSTED_VIEW_RECT_PROP)
+
+
+def runtime_passes_input(hwnd):
+    """The runtime forwards the mouse itself (DXR_HOSTED_INPUT=app marks its
+    window WS_EX_NOACTIVATE); then leave the window styles alone."""
+    WS_EX_NOACTIVATE = 0x08000000
+    return bool(_u32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_NOACTIVATE)
 
 
 def set_click_through(hwnd, on):

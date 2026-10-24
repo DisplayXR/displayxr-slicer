@@ -335,6 +335,9 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         self.rig = self._makeRig()
         os.environ[dxr.ENV_LEGACY_CAMERA_RIG] = json.dumps(self.rig["json"])
         os.environ.setdefault(dxr.ENV_HOSTED_WINDOW, "auto")
+        # Runtimes that support it forward the mouse to Slicer themselves;
+        # older ones ignore this and get the click-through fallback in _tick.
+        os.environ.setdefault(dxr.ENV_HOSTED_INPUT, "app")
 
         cam = self.referenceCamera()
         self._saved["viewAngle"] = cam.GetViewAngle()
@@ -407,7 +410,8 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
                     self._notify()
             if self.hostedHwnd:
                 dxr.publish_view_rect(self.mainHwnd(), *self.viewRectPx())
-                dxr.set_click_through(self.hostedHwnd, self.clickThrough)
+                if not dxr.runtime_passes_input(self.hostedHwnd):
+                    dxr.set_click_through(self.hostedHwnd, self.clickThrough)
             self.syncCamera()
         except Exception:
             import traceback
@@ -415,7 +419,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
 
     def setClickThrough(self, on):
         self.clickThrough = on
-        if self.hostedHwnd:
+        if self.hostedHwnd and not dxr.runtime_passes_input(self.hostedHwnd):
             dxr.set_click_through(self.hostedHwnd, on)
 
     def toggleFullscreen(self):
