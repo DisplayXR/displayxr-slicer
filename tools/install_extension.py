@@ -1,3 +1,5 @@
+# Install SlicerVirtualReality headlessly:
+#   Slicer.exe --no-splash --no-main-window --python-script tools/install_extension.py
 import slicer, sys
 em = slicer.app.extensionsManagerModel()
 em.interactive = False
