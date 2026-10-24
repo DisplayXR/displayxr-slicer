@@ -1,4 +1,5 @@
-# Module's live sliders: atlas at Depth 100 %, Depth 200 %, Depth 100 % + Screen plane +50 %.
+# Module's live sliders: atlas at Depth 100 %, 200 %, Screen plane +50 %, then an outside
+# DXR_HostedDepth write of 0.5 (the shared slider) that the panel slider must follow.
 # Run with DXR_PLUGIN_EXCLUSIVE=sim-display (fixed eyes).
 import os, time, shutil, traceback
 import slicer, qt, vtk
@@ -31,7 +32,9 @@ w = lambda: slicer.modules.DisplayXRWidget
 steps = [(1500, s1), (10000, lambda: capture("d100")),
          (13000, lambda: setattr(w().depthSlider, "value", 200)), (15000, lambda: capture("d200")),
          (18000, lambda: (setattr(w().depthSlider, "value", 100), setattr(w().planeSlider, "value", 50))), (20000, lambda: capture("plane50")),
-         (23000, lambda: (lg.stop(), log("after stop prop now", dxr.read_hosted_depth_now(lg.mainHwnd())), slicer.app.exit(0)))]
+         (22000, lambda: (setattr(w().planeSlider, "value", 0), dxr.write_hosted_depth(lg.mainHwnd(), 0.5, 0))),  # as the shared slider does
+         (24000, lambda: (log("panel slider after outside write:", w().depthSlider.value), capture("outside50"))),
+         (27000, lambda: (lg.stop(), log("after stop prop now", dxr.read_hosted_depth_now(lg.mainHwnd())), slicer.app.exit(0)))]
 def wrap(fn):
     def f():
         try: fn()

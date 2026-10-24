@@ -29,9 +29,12 @@ HOSTED_VIEW_RECT_PROP = "DXR_HostedViewRect"
 #: Live depth for embedded apps (runtime draft #2350): a helper (the shared
 #: depth slider) writes DXR_HostedDepth on the main window; the runtime
 #: publishes the values in effect as DXR_HostedDepthNow. Packing:
-#: absolute rig ipdFactor x 1000 | convergence mm << 16.
-HOSTED_DEPTH_PROP = "DXR_HostedDepth"
-HOSTED_DEPTH_NOW_PROP = "DXR_HostedDepthNow"
+#: strength x 1000 | convergence mm << 16.
+#: The Rel pair (47ce8fb) carries strength relative to the app's seeded rig
+#: (1.0 = Slicer's comfortable depth); the plain pair stays absolute. The
+#: shared depth slider and this module both use Rel.
+HOSTED_DEPTH_PROP = "DXR_HostedDepthRel"
+HOSTED_DEPTH_NOW_PROP = "DXR_HostedDepthRelNow"
 #: Per-exe atlas capture trigger in %TEMP% (exe basename without ".exe").
 ATLAS_TRIGGER = "displayxr_atlas_trigger.{exe}{suffix}"
 ATLAS_OUTPUT = "displayxr_atlas.{exe}{suffix}.png"
@@ -114,7 +117,7 @@ def publish_view_rect(main_hwnd, x, y, w, h):
 
 
 def read_hosted_depth_now(main_hwnd):
-    """(ipdFactor, convergence_m) the runtime is using, or None."""
+    """(strength relative to the seeded rig, convergence_m) in effect, or None."""
     _u32.GetPropW.argtypes = [wt.HWND, wt.LPCWSTR]
     _u32.GetPropW.restype = ctypes.c_void_p
     v = _u32.GetPropW(main_hwnd, HOSTED_DEPTH_NOW_PROP) or 0
@@ -122,9 +125,9 @@ def read_hosted_depth_now(main_hwnd):
     return (strength, conv) if strength > 0 and conv > 0 else None
 
 
-def write_hosted_depth(main_hwnd, ipd_factor, convergence_m):
+def write_hosted_depth(main_hwnd, strength, convergence_m):
     """Ask the runtime for a live rig change; 0 leaves that field alone."""
-    s = max(1, min(int(round(ipd_factor * 1000)), 0xFFFF)) if ipd_factor > 0 else 0
+    s = max(1, min(int(round(strength * 1000)), 0xFFFF)) if strength > 0 else 0
     c = max(1, min(int(round(convergence_m * 1000)), 0xFFFF)) if convergence_m > 0 else 0
     _u32.SetPropW(main_hwnd, HOSTED_DEPTH_PROP, ctypes.c_void_p(s | (c << 16)))
 
@@ -194,6 +197,21 @@ def panel_geometry():
     except Exception:
         pass
     return DEFAULT_PANEL_M + DEFAULT_PANEL_PX
+
+
+def shared_depth_slider_script():
+    """Path of the shared DisplayXR depth slider (displayxr-compat tools), or None."""
+    p = os.path.join(os.path.expanduser("~"), ".claude", "skills", "displayxr-compat", "tools",
+                     "DisplayXR-DepthSlider.ps1")
+    return p if os.path.exists(p) else None
+
+
+def shared_depth_slider_takes_pid(script):
+    try:
+        with open(script, encoding="utf-8", errors="ignore") as f:
+            return "$ProcessId" in f.read()
+    except OSError:
+        return False
 
 
 def atlas_paths(exe_basename, projection=True):

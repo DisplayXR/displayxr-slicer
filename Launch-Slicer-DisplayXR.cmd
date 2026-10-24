@@ -16,4 +16,5 @@ if exist "%DEVRT%" (set "XR_RUNTIME_JSON=%DEVRT%") else (set "XR_RUNTIME_JSON=C:
 set "DXR_HOSTED_WINDOW=auto"
 rem Mouse over the 3D goes to Slicer (runtime hosted/input-passthrough; ignored by older runtimes)
 set "DXR_HOSTED_INPUT=app"
+rem The DisplayXR 3D module starts the shared depth slider with the 3D session.
 start "" "%SLICER%" --additional-module-paths "%HERE%DisplayXR" --python-code "slicer.util.selectModule('DisplayXR'); slicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutConventionalWidescreenView)" %*

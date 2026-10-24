@@ -154,6 +154,7 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
 
         lay.addStretch(1)
         self.logic.statusChanged = self.updateStatus
+        self.logic.depthChanged = self.onDepthFromRuntime
         self.updateStatus()
 
     def onBone(self):
@@ -169,6 +170,11 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
             self.usdLabel.setText(f"Wrote {len(meshes)} mesh(es) to\n{path}")
         except Exception as e:
             self.usdLabel.setText(str(e))
+
+    def onDepthFromRuntime(self, percent):
+        self.depthSlider.blockSignals(True)
+        self.depthSlider.value = percent
+        self.depthSlider.blockSignals(False)
 
     def onPlane(self, value):
         self.logic.planePercent = value
@@ -209,6 +215,8 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         self.depthPercent = 100.0  # live Depth slider, % of K_COMFORTABLE
         self.planePercent = 0.0    # live Screen plane slider: glass distance +/- %
         self._sentDepth = None
+        self._lastNow = None
+        self.depthChanged = None   # widget hook: depth changed outside the panel
         self.autoScreenPlane = True
         self.clickThrough = True
         self.statusChanged = None
@@ -271,6 +279,49 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         tl = view.mapTo(mw, qt.QPoint(0, 0))
         dpr = view.devicePixelRatioF()
         return (round(tl.x() * dpr), round(tl.y() * dpr), round(view.width * dpr), round(view.height * dpr))
+
+    def _startSharedSlider(self):
+        """The shared DisplayXR depth slider (Depth / Focus for every app),
+        docked in a reserved corner of Slicer's menu bar while 3D is on."""
+        script = dxr.shared_depth_slider_script()
+        if not script or getattr(self, "_sliderProc", None) is not None:
+            return
+        import subprocess
+        args = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script,
+                "-Process", "SlicerApp-real", "-RightGap", "20", "-Top", "0", "-Height", "52"]
+        if dxr.shared_depth_slider_takes_pid(script):
+            args += ["-ProcessId", str(os.getpid())]
+        try:
+            self._sliderProc = subprocess.Popen(args, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            self.reserveDepthSliderSpace()
+        except OSError:
+            self._sliderProc = None
+
+    def _stopSharedSlider(self):
+        proc = getattr(self, "_sliderProc", None)
+        if proc is not None:
+            proc.terminate()
+            self._sliderProc = None
+        spacer = getattr(self, "_sliderSpacer", None)
+        if spacer is not None:
+            spacer.hide()
+            slicer.util.mainWindow().menuBar().setMinimumHeight(0)
+
+    def reserveDepthSliderSpace(self, width_px=1340, height_px=52):
+        """The shared DisplayXR depth slider (started by the launcher) docks at
+        the top right of Slicer's client area; reserve that corner of the menu
+        bar so the slider covers empty space, not Slicer's toolbar."""
+        mw = slicer.util.mainWindow()
+        if mw is None or (getattr(self, "_sliderSpacer", None) is not None and self._sliderSpacer.visible):
+            return
+        dpr = mw.devicePixelRatioF()
+        spacer = qt.QWidget()
+        spacer.setFixedSize(round(width_px / dpr), round(height_px / dpr))
+        mw.menuBar().setCornerWidget(spacer, qt.Qt.TopRightCorner)
+        spacer.show()
+        # QMenuBar sizes to its menus, not to a fixed-size corner widget
+        mw.menuBar().setMinimumHeight(round(height_px / dpr))
+        self._sliderSpacer = spacer
 
     def medicalLayout(self):
         slicer.app.layoutManager().setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutConventionalWidescreenView)
@@ -376,12 +427,14 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         self.hostedHwnd = None
         self._cameraObs = cam.AddObserver(vtk.vtkCommand.ModifiedEvent, lambda *a: self.syncCamera())
         self._timer.start()
+        self._startSharedSlider()
         self._notify()
 
     def stop(self):
         if not self.active:
             return
         self.active = False
+        self._stopSharedSlider()
         self._timer.stop()
         try:
             vrlogic = slicer.modules.virtualreality.logic()
@@ -405,6 +458,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         except Exception:
             pass
         self._sentDepth = None
+        self._lastNow = None
         self.hostedHwnd = None
         self.lastDepth = None
 
@@ -424,6 +478,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
                     self._notify()
             if self.hostedHwnd:
                 dxr.publish_view_rect(self.mainHwnd(), *self.viewRectPx())
+                self._followDepthNow()
                 if not dxr.runtime_passes_input(self.hostedHwnd):
                     dxr.set_click_through(self.hostedHwnd, self.clickThrough)
             self.syncCamera()
@@ -431,17 +486,31 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
             import traceback
             traceback.print_exc()
 
+    def _followDepthNow(self):
+        """Another depth control (the shared DisplayXR depth slider) or the
+        runtime's comfort clamp changed the strength: show it on our slider."""
+        now = dxr.read_hosted_depth_now(self.mainHwnd())
+        if not now or now == self._lastNow:
+            return
+        self._lastNow = now
+        if self._sentDepth is not None and abs(now[0] - self._sentDepth) > 0.0015:
+            self._sentDepth = now[0]
+            self.depthPercent = round(now[0] * 100.0)
+            if self.depthChanged:
+                self.depthChanged(self.depthPercent)
+            self._notify()
+
     def setDepthPercent(self, value):
         self.depthPercent = float(value)
         self._applyDepth()
         self._notify()
 
     def _applyDepth(self):
-        """Live stereo strength: the runtime scales the rig's ipdFactor
-        (DXR_HostedDepth; 0 in the focus field leaves the convergence alone)."""
+        """Live stereo strength through the runtime (DXR_HostedDepth): 1.0 is
+        the rig Slicer seeded; 0 in the focus field leaves convergence alone."""
         if not self.active or not self.hostedHwnd or not self.rig:
             return
-        strength = self.rig["json"]["ipdFactor"] * self.depthPercent / 100.0
+        strength = self.depthPercent / 100.0
         if strength != self._sentDepth:
             dxr.write_hosted_depth(self.mainHwnd(), strength, 0.0)
             self._sentDepth = strength
@@ -541,7 +610,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
             k_now, g_now = K, g
             now = dxr.read_hosted_depth_now(self.mainHwnd())
             if now:
-                k_now = K * now[0] / self.rig["json"]["ipdFactor"]
+                k_now = K * now[0]
                 g_now = g * now[1] / self.rig["convergence"]
             n, f = depths[0] + b, depths[1] + b
             front = k_now * (1.0 - g_now / max(n, 1e-6))
