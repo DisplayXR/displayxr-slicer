@@ -26,7 +26,7 @@ runtime (v2.53) the 3D covers the whole panel instead.
 |---|---|
 | Rendering | SlicerVirtualReality's OpenXR view (VTK `vtkOpenXRRenderWindow`, OpenGL). DisplayXR runs it as a hosted legacy app. |
 | Window | `DXR_HOSTED_WINDOW=auto` embeds the woven window over Slicer; the module publishes the 3D view rect as `DXR_HostedViewRect` (follows layout changes and resizes). |
-| Mouse | The woven window is click-through, so Slicer's own 3D view gets the mouse; the 3D follows Slicer's 3D camera every frame. |
+| Mouse | The runtime forwards the mouse over the 3D to Slicer (`DXR_HOSTED_INPUT=app`; older runtimes: the module makes the woven window click-through). Slicer's own rotate, pan, zoom and markups work, and the 3D follows Slicer's 3D camera every frame. |
 | Camera rig | `DXR_LEGACY_CAMERA_RIG` set per start: glass at the 0.6 m nominal viewer, vertical FOV = the 3D view's physical height at 0.6 m, eye separation from the Depth setting. Virtual metres map 1:1 onto the panel, so parallax is predictable: `p(z) = K·(1 − g/z)`. |
 | Depth | "Keep depth comfortable" moves the screen plane (and, when zoomed in close, the viewpoint) so the visible content stays inside the panel's comfort budget (≈0.14 % of width in front, 0.42 % behind). The panel shows the live depth. |
 | Eye tracking | Leia SR eye tracking gives motion parallax as you move your head. |
@@ -48,6 +48,7 @@ All runtime/extension internals the module relies on are in
 `tests/` holds scripts run with
 `Slicer.exe --additional-module-paths DisplayXR --python-script tests/<file>.py`:
 
+- `test_mouse_passthrough.py`: a posted drag over the 3D window rotates Slicer's camera.
 - `test_functional.py`: start, mouse hit-test through the 3D, camera sync,
   comfort solver after zoom, F11 round trip, stop/restart.
 - `calibrate_spheres.py`: spheres at known depths. Run with
