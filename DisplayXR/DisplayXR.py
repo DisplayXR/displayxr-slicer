@@ -22,6 +22,7 @@ import json
 import math
 import os
 import sys
+import time
 
 import qt
 import slicer
@@ -30,6 +31,7 @@ from slicer.ScriptedLoadableModule import (ScriptedLoadableModule, ScriptedLoada
                                            ScriptedLoadableModuleWidget)
 
 import displayxr_coupling as dxr
+import displayxr_gamepad
 
 #: Comfort budget on the Leia SR panel, as a fraction of view width
 #: (calibrated with the user 2026-10-23; see displayxr-compat PLAYBOOK §3).
@@ -228,6 +230,12 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         self._timer = qt.QTimer()
         self._timer.setInterval(100)
         self._timer.timeout.connect(self._tick)
+        # Gamepad navigation of Slicer's own camera, at display rate (see displayxr_gamepad)
+        self._padTimer = qt.QTimer()
+        self._padTimer.setInterval(16)
+        self._padTimer.timeout.connect(self._padTick)
+        self._pad = None
+        self._padLast = 0.0
 
     # -- status ----------------------------------------------------------
     def statusText(self):
@@ -400,6 +408,9 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         # Runtimes that support it forward the mouse to Slicer themselves;
         # older ones ignore this and get the click-through fallback in _tick.
         os.environ.setdefault(dxr.ENV_HOSTED_INPUT, "app")
+        # The pad drives Slicer's camera (displayxr_gamepad), not the runtime's fly camera.
+        os.environ.setdefault(dxr.ENV_GAMEPAD_NAV, "0")
+        os.environ.setdefault(dxr.ENV_GAMEPAD_EMULATE, "0")
 
         cam = self.referenceCamera()
         self._saved["viewAngle"] = cam.GetViewAngle()
@@ -427,6 +438,9 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         self.hostedHwnd = None
         self._cameraObs = cam.AddObserver(vtk.vtkCommand.ModifiedEvent, lambda *a: self.syncCamera())
         self._timer.start()
+        self._pad = displayxr_gamepad.Navigator(self.threeDWidget().threeDView())
+        self._padLast = time.monotonic()
+        self._padTimer.start()
         self._startSharedSlider()
         self._notify()
 
@@ -436,6 +450,8 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         self.active = False
         self._stopSharedSlider()
         self._timer.stop()
+        self._padTimer.stop()
+        self._pad = None
         try:
             vrlogic = slicer.modules.virtualreality.logic()
             vrlogic.SetVirtualRealityActive(False)
@@ -485,6 +501,17 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         except Exception:
             import traceback
             traceback.print_exc()
+
+    def _padTick(self):
+        if self._pad is None:
+            return
+        now = time.monotonic()
+        try:
+            self._pad.update(now - self._padLast)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        self._padLast = now
 
     def _followDepthNow(self):
         """Another depth control (the shared DisplayXR depth slider) or the

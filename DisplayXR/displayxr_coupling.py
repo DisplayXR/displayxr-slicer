@@ -21,6 +21,10 @@ ENV_HOSTED_WINDOW = "DXR_HOSTED_WINDOW"
 #: app = the embedded 3D window posts mouse messages to the app's window
 #: (runtime branch hosted/input-passthrough). Read once per process.
 ENV_HOSTED_INPUT = "DXR_HOSTED_INPUT"
+#: 0 = the runtime's gamepad fly camera / emulated VR controllers stay off; the
+#: module's own gamepad navigation drives Slicer's camera instead.
+ENV_GAMEPAD_NAV = "DXR_INPUT_GAMEPAD_NAV"
+ENV_GAMEPAD_EMULATE = "DXR_INPUT_GAMEPAD_EMULATE_CONTROLLERS"
 #: Window class of the runtime-owned 3D window (D3D11/GL native compositor).
 HOSTED_WINDOW_CLASS = "DisplayXRD3D11"
 #: Window property on the app's main window: the viewer rect in physical client

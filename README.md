@@ -27,6 +27,7 @@ runtime (v2.53) the 3D covers the whole panel instead.
 | Rendering | SlicerVirtualReality's OpenXR view (VTK `vtkOpenXRRenderWindow`, OpenGL). DisplayXR runs it as a hosted legacy app. |
 | Window | `DXR_HOSTED_WINDOW=auto` embeds the woven window over Slicer; the module publishes the 3D view rect as `DXR_HostedViewRect` (follows layout changes and resizes). |
 | Mouse | The runtime forwards the mouse over the 3D to Slicer (`DXR_HOSTED_INPUT=app`; older runtimes: the module makes the woven window click-through). Slicer's own rotate, pan, zoom and markups work, and the 3D follows Slicer's 3D camera every frame. |
+| Gamepad | An Xbox-style pad (XInput) drives Slicer's own 3D camera while 3D is on and Slicer is in front: left stick orbit, right stick pan, triggers zoom (right in, left out), A resets the 3D view. The runtime's pad fly camera and emulated VR controllers are turned off for Slicer (`DXR_INPUT_GAMEPAD_NAV=0`, `DXR_INPUT_GAMEPAD_EMULATE_CONTROLLERS=0`), since the 3D is pinned to Slicer's camera. Same mapping as the ParaView integration. |
 | Camera rig | `DXR_LEGACY_CAMERA_RIG` set per start: glass at the 0.6 m nominal viewer, vertical FOV = the 3D view's physical height at 0.6 m, eye separation from the Depth setting. Virtual metres map 1:1 onto the panel, so parallax is predictable: `p(z) = K·(1 − g/z)`. |
 | Live depth | **Depth** (5–200 %) and **Screen plane** (−50…+100 %) sliders in the module panel, applied while the 3D runs. Depth scales the stereo strength through the runtime (`DXR_HostedDepthRel`, draft #2350; 1.0 = Slicer's comfortable rig). While 3D is on, the module also starts the shared DisplayXR depth slider (`displayxr-compat/tools/DisplayXR-DepthSlider.ps1 -ProcessId <Slicer pid>`), docked at the right of Slicer's menu bar. Both controls stay in sync through `DXR_HostedDepthRelNow`. Screen plane moves the glass inside the module, with no size change. Atlas-verified: 200 % doubles parallax, +50 % puts the glass at exactly 1.5×. |
 | Depth | "Keep depth comfortable" moves the screen plane (and, when zoomed in close, the viewpoint) so the visible content stays inside the panel's comfort budget (≈0.14 % of width in front, 0.42 % behind). The panel shows the live depth. |
@@ -51,6 +52,7 @@ All runtime/extension internals the module relies on are in
 
 - `test_live_sliders.py` / `test_live_depth.py`: live Depth / Screen plane sliders and raw `DXR_HostedDepth`, captured as atlases (sim-display).
 - `test_mouse_passthrough.py`: a posted drag over the 3D window rotates Slicer's camera.
+- `test_gamepad.py`: a fake pad orbits, pans, zooms and resets Slicer's camera with 3D on; the 3D follows and depth stays in budget.
 - `test_functional.py`: start, mouse hit-test through the 3D, camera sync,
   comfort solver after zoom, F11 round trip, stop/restart.
 - `calibrate_spheres.py`: spheres at known depths. Run with
