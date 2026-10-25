@@ -48,9 +48,9 @@ class DisplayXR(ScriptedLoadableModule):
         parent.title = "DisplayXR 3D"
         parent.categories = ["DisplayXR"]
         parent.dependencies = ["VirtualReality"]
-        parent.contributors = ["Joe Hill (Leia Inc.)"]
+        parent.contributors = ["Joe Hill (DisplayXR contributors)"]
         parent.helpText = ("Shows Slicer's 3D view in glasses-free 3D on a DisplayXR display "
-                           "(e.g. Leia SR), inside the 3D view itself. Rotate, pan and zoom as usual.")
+                           "(tested on Leia SR), inside the 3D view itself. Rotate, pan and zoom as usual.")
         parent.acknowledgementText = "Built on SlicerVirtualReality (OpenXR) and the DisplayXR runtime."
 
 
