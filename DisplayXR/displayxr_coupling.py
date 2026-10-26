@@ -44,7 +44,8 @@ ATLAS_TRIGGER = "displayxr_atlas_trigger.{exe}{suffix}"
 ATLAS_OUTPUT = "displayxr_atlas.{exe}{suffix}.png"
 #: The legacy rig's nominal eye in the runtime's LOCAL_FLOOR/STAGE space (m).
 RIG_EYE = (0.0, 1.6, 0.0)
-#: Nominal viewing distance of the Leia SR panel (display info "nominal z").
+#: Nominal viewing distance (m) if displayxr-cli can't be asked; normally read
+#: from display info (screens[0].layout.nominal_viewer_m.z), see nominal_viewer_m().
 NOMINAL_VIEWER_M = 0.6
 #: Leia SR 15.6" panel used for testing, if displayxr-cli can't be asked.
 DEFAULT_PANEL_M = (0.3444, 0.2153)
@@ -185,27 +186,49 @@ def is_panel_fullscreen(hwnd):
     return x <= m.left and y <= m.top and w >= m.right - m.left and h >= m.bottom - m.top
 
 
+_display_info = None
+
+
+def displayxr_cli():
+    """displayxr-cli.exe of the installed DisplayXR runtime, else one on PATH."""
+    import shutil
+    cli = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "DisplayXR", "Runtime", "displayxr-cli.exe")
+    return cli if os.path.exists(cli) else shutil.which("displayxr-cli")
+
+
+def display_screen():
+    """First screen of `displayxr-cli status --json`, or {} (cached once read)."""
+    global _display_info
+    if _display_info is None:
+        import subprocess
+        try:
+            out = subprocess.run([displayxr_cli(), "status", "--json"], capture_output=True, text=True, timeout=5,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+            _display_info = json.loads(out)["screens"][0]
+        except Exception:
+            return {}
+    return _display_info
+
+
 def panel_geometry():
     """(width_m, height_m, width_px, height_px) of the 3D panel."""
-    import subprocess
-    cli = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "DisplayXR", "Runtime", "displayxr-cli.exe")
-    try:
-        out = subprocess.run([cli, "status", "--json"], capture_output=True, text=True, timeout=5,
-                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
-        st = json.loads(out)
-        for s in st.get("screens", []):
-            mm = s.get("physical_mm") or {}
-            nat = s.get("native") or {}
-            if mm.get("width") and nat.get("width"):
-                return mm["width"] / 1000.0, mm["height"] / 1000.0, nat["width"], nat["height"]
-    except Exception:
-        pass
+    s = display_screen()
+    mm = s.get("physical_mm") or {}
+    nat = s.get("native") or {}
+    if mm.get("width") and nat.get("width"):
+        return mm["width"] / 1000.0, mm["height"] / 1000.0, nat["width"], nat["height"]
     return DEFAULT_PANEL_M + DEFAULT_PANEL_PX
 
 
+def nominal_viewer_m():
+    """Nominal viewing distance (m) from display info, else NOMINAL_VIEWER_M."""
+    layout = display_screen().get("layout") or {}
+    return (layout.get("nominal_viewer_m") or {}).get("z") or NOMINAL_VIEWER_M
+
+
 def shared_depth_slider_script():
-    """Path of the shared DisplayXR depth slider (displayxr-compat tools), or None."""
-    p = os.path.join(os.path.expanduser("~"), ".claude", "skills", "displayxr-compat", "tools",
+    """Path of the depth slider vendored in this repo (tools/), or None."""
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools",
                      "DisplayXR-DepthSlider.ps1")
     return p if os.path.exists(p) else None
 

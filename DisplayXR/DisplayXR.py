@@ -8,7 +8,8 @@ DisplayXR runs it as a hosted *legacy* app and, with DXR_HOSTED_WINDOW=auto,
 embeds its woven 3D window over Slicer's main window. This module:
 
 * sets a camera rig that matches the panel's true geometry (glass at the
-  nominal 0.6 m viewer, vertical FOV of the 3D view's physical height), so
+  display's nominal viewing distance, vertical FOV of the 3D view's physical
+  height), so
   virtual metres map 1:1 onto the panel and parallax is predictable;
 * publishes the 3D view's rect (DXR_HostedViewRect), so the 3D sits exactly
   in Slicer's 3D view at any layout or size;
@@ -19,6 +20,7 @@ embeds its woven 3D window over Slicer's main window. This module:
 """
 
 import json
+import logging
 import math
 import os
 import sys
@@ -34,7 +36,10 @@ import displayxr_coupling as dxr
 import displayxr_gamepad
 
 #: Comfort budget on the Leia SR panel, as a fraction of view width
-#: (calibrated with the user 2026-10-23; see displayxr-compat PLAYBOOK §3).
+#: (calibrated by eye on the panel, 2026-10-23). Not in DisplayXR's display
+#: info yet (runtime issue #2388), so it is a constant here; background on
+#: per-display comfort limits:
+#: https://github.com/DisplayXR/displayxr-runtime/discussions/2331#discussioncomment-19185165
 BUDGET_FRONT = 0.0014
 BUDGET_BEHIND = 0.0042
 
@@ -289,21 +294,40 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         return (round(tl.x() * dpr), round(tl.y() * dpr), round(view.width * dpr), round(view.height * dpr))
 
     def _startSharedSlider(self):
-        """The shared DisplayXR depth slider (Depth / Focus for every app),
-        docked in a reserved corner of Slicer's menu bar while 3D is on."""
+        """The shared DisplayXR depth slider (Depth / Focus for every app,
+        vendored in tools/), docked in a reserved corner of Slicer's menu bar
+        while 3D is on. Runs under the user's PowerShell execution policy; if
+        it can't run, 3D carries on without it (the module's sliders work)."""
         script = dxr.shared_depth_slider_script()
         if not script or getattr(self, "_sliderProc", None) is not None:
             return
         import subprocess
-        args = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script,
+        args = ["pwsh", "-NoProfile", "-WindowStyle", "Hidden", "-File", script,
                 "-Process", "SlicerApp-real", "-RightGap", "20", "-Top", "0", "-Height", "52"]
         if dxr.shared_depth_slider_takes_pid(script):
             args += ["-ProcessId", str(os.getpid())]
         try:
             self._sliderProc = subprocess.Popen(args, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             self.reserveDepthSliderSpace()
+            qt.QTimer.singleShot(3000, self._checkSharedSlider)
         except OSError:
             self._sliderProc = None
+            logging.warning("DisplayXR: depth slider not started (PowerShell 7 'pwsh' not found); "
+                            "continuing without it.")
+
+    def _checkSharedSlider(self):
+        """Log once and drop the slider's space if it exited right away (e.g. the
+        execution policy refused the script)."""
+        proc = getattr(self, "_sliderProc", None)
+        if proc is None or proc.poll() is None:
+            return
+        script = dxr.shared_depth_slider_script() or ""
+        hint = ""
+        if os.path.exists(script + ":Zone.Identifier"):
+            hint = " The script is marked as downloaded; run Unblock-File on it."
+        logging.warning("DisplayXR: depth slider %s exited (code %s), likely blocked by the PowerShell "
+                        "execution policy; continuing without it.%s", script, proc.returncode, hint)
+        self._stopSharedSlider()
 
     def _stopSharedSlider(self):
         proc = getattr(self, "_sliderProc", None)
@@ -372,15 +396,16 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         h_m = max(h, 1) * m_per_px
         w_m = max(w, 1) * m_per_px
         k = K_COMFORTABLE
-        vfov = 2.0 * math.atan(h_m / 2.0 / dxr.NOMINAL_VIEWER_M)
+        viewer_m = dxr.nominal_viewer_m()
+        vfov = 2.0 * math.atan(h_m / 2.0 / viewer_m)
         rig = {
-            "convergenceDiopters": 1.0 / dxr.NOMINAL_VIEWER_M,
+            "convergenceDiopters": 1.0 / viewer_m,
             "verticalFov": vfov,
             # eye separation so a point at infinity has parallax k of the view width
             "ipdFactor": k * w_m / dxr.IPD_M,
         }
         return {"json": rig, "vfov": vfov, "m_per_px": m_per_px,
-                "convergence": dxr.NOMINAL_VIEWER_M}
+                "convergence": viewer_m}
 
     def parallaxAtInfinity(self):
         """K: parallax (fraction of view width) of a point at infinity, for the
