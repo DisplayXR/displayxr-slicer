@@ -333,8 +333,16 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
 
     # -- Slicer views ----------------------------------------------------
     def threeDWidget(self):
+        """The 3D view on screen: the largest visible one (index 0 can be a
+        hidden view left over from another layout or module)."""
         lm = slicer.app.layoutManager()
-        return lm.threeDWidget(0) if lm and lm.threeDViewCount > 0 else None
+        if not lm or lm.threeDViewCount == 0:
+            return None
+        widgets = [lm.threeDWidget(i) for i in range(lm.threeDViewCount)]
+        shown = [w for w in widgets if w.isVisible() and w.threeDView().isVisible()]
+        if not shown:
+            return widgets[0]
+        return max(shown, key=lambda w: w.threeDView().width * w.threeDView().height)
 
     def referenceCamera(self):
         w = self.threeDWidget()
@@ -443,6 +451,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         try:
             seg, secs = displayxr_monai.segment(vol)
             n = displayxr_monai.show_in_3d(seg)
+            displayxr_monai.show_credits(sample or (displayxr_monai.DEFAULT_SAMPLE if not vols else None))
         finally:
             if was3D:
                 self.start()
