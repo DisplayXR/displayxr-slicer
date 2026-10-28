@@ -7,9 +7,9 @@ view, so nothing covers Slicer's menus, markups or mouse. **Full panel** shows t
 3D view alone on the whole panel. Rotate, pan and zoom with the mouse as usual.
 The slice views stay 2D beside it.
 
-**Seated-verified 2026-10-28:** a person at the Leia SR panel ("looks good"), with
-3D Slicer 5.12.4, the installed DisplayXR runtime v2.55.0 + Leia plug-in 2.18.3,
-and the default launcher.
+**Seated check, 2026-10-28: Pass** (Leia SR panel; 3D Slicer 5.12.4; installed
+DisplayXR runtime v2.55.0 + Leia plug-in 2.18.3; default launcher; CT chest volume
+rendering at Depth 100 %, inside the 0.14 % / 0.42 % budget; ~28 eye pairs/s).
 
 > Research and demonstration software. Not a medical device; not for diagnosis.
 
@@ -103,7 +103,10 @@ into Slicer's Python, and downloads the model and the sample.
 
 Measured 2026-10-28 (RTX 5070 Ti): 19 organs in ~17 s of inference; the whole live
 segment (load → segment → 3D → USD of 19 meshes) in ~52 s. Depth at 100 %: −0.140 % /
-+0.27…0.37 % of panel width. Seated on the Leia SR panel: "looks good".
++0.27…0.37 % of panel width. Seated check on the Leia SR panel: Pass (v2.55.0 + Leia 2.18.3, Depth 100 %, ~40 eye
+pairs/s). Organs in USD Composer (Launch-Composer-Slicer.ps1), seated: Pass; note:
+displayxr.omniverse's framing puts the nearest organs at −0.235 % (over the 0.14 % front
+budget).
 
 ## Platforms
 

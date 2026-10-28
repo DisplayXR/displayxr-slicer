@@ -75,6 +75,20 @@ def s_geom():
         disp = (got[1][0] - got[0][0]) / w * 100
         log("geom %-5s VTK L %.2f,%.2f R %.2f,%.2f | expected L %.2f,%.2f R %.2f,%.2f | max err %.3f px | disparity %.3f %% of view" % (
             name, *got[0], *got[1], *exp[0], *exp[1], err, disp))
+def s_atlas():
+    import displayxr_coupling as dxr, shutil
+    trig, out = dxr.atlas_paths("SlicerApp-real", True)
+    if os.path.exists(out):
+        os.remove(out)
+    open(trig, "w").close()
+    def done(n=[0]):
+        if os.path.exists(out):
+            dst = os.path.join(PROBE, "viewport_atlas.png"); shutil.copy(out, dst); log("atlas", dst)
+        elif n[0] < 20:
+            n[0] += 1; qt.QTimer.singleShot(200, done)
+        else:
+            log("atlas: none written (trigger still there: %s)" % os.path.exists(trig))
+    qt.QTimer.singleShot(200, done)
 def s_depth():
     lg.setDepthPercent(50); log("depth -> 50 %")
 def s_stop():
@@ -82,6 +96,6 @@ def s_stop():
     log("stopped", lg.active, "vp", lg.vp, "error", repr(lg.error), "| status", lg.statusText())
     grab("viewport_after_stop.png")
     slicer.app.exit(0)
-for ms, fn in [(1000, s_start), (9000, s_check("a")), (12000, s_check("b")), (12200, s_geom), (12500, s_depth),
-               (14000, s_check("c")), (15000, s_stop)]:
+for ms, fn in [(1000, s_start), (9000, s_check("a")), (12000, s_check("b")), (12200, s_geom), (12300, s_atlas), (17500, s_depth),
+               (19000, s_check("c")), (20000, s_stop)]:
     qt.QTimer.singleShot(ms, fn)
