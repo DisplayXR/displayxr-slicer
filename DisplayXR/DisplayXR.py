@@ -3,6 +3,12 @@
 
 How it works
 ------------
+Default (texture mode, the in-viewport target; runtime v2.55+, needs bin/ from
+native/build.bat): Slicer renders two off-axis eyes with its own renderer and
+the woven frame is drawn back into its own 3D view (displayxr_viewport.py).
+Nothing covers Slicer. The rest of this docstring describes the fallback
+(DXR_SLICER_MODE=overlay, or when bin/ is missing), kept as a measurement rig:
+
 SlicerVirtualReality renders the scene through OpenXR (VTK vtkOpenXRRenderWindow).
 DisplayXR runs it as a hosted *legacy* app and, with DXR_HOSTED_WINDOW=auto,
 embeds its woven 3D window over Slicer's main window. This module:
@@ -34,6 +40,7 @@ from slicer.ScriptedLoadableModule import (ScriptedLoadableModule, ScriptedLoada
 
 import displayxr_coupling as dxr
 import displayxr_gamepad
+import displayxr_viewport
 
 #: Comfort budget on the Leia SR panel, as a fraction of view width
 #: (calibrated by eye on the panel, 2026-10-23). Not in DisplayXR's display
@@ -54,11 +61,11 @@ class DisplayXR(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         parent.title = "DisplayXR 3D"
         parent.categories = ["DisplayXR"]
-        parent.dependencies = ["VirtualReality"]
+        parent.dependencies = []  # SlicerVirtualReality only for the overlay fallback
         parent.contributors = ["Joe Hill (DisplayXR contributors)"]
         parent.helpText = ("Shows Slicer's 3D view in glasses-free 3D on a DisplayXR display "
                            "(tested on Leia SR), inside the 3D view itself. Rotate, pan and zoom as usual.")
-        parent.acknowledgementText = "Built on SlicerVirtualReality (OpenXR) and the DisplayXR runtime."
+        parent.acknowledgementText = "Built on the DisplayXR runtime (texture target); the overlay fallback uses SlicerVirtualReality."
 
 
 # ----------------------------------------------------------------------------
@@ -93,6 +100,13 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
                                     "low-ghosting range; more is stronger but ghosts more.")
         self.depthSlider.valueChanged.connect(self.logic.setDepthPercent)
         form.addRow("Depth:", self.depthSlider)
+        steps = qt.QHBoxLayout()
+        for label, delta in (("\u2212", -25), ("+", 25), ("Reset", None)):
+            b = qt.QPushButton(label)
+            b.setToolTip("Depth in 25 % steps; Reset = 100 %, the comfortable default")
+            b.clicked.connect(lambda checked=False, d=delta: self.stepDepth(d))
+            steps.addWidget(b)
+        form.addRow("", steps)
 
         self.planeSlider = ctk.ctkSliderWidget()
         self.planeSlider.minimum, self.planeSlider.maximum = -50, 100
@@ -178,6 +192,11 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
         except Exception as e:
             self.usdLabel.setText(str(e))
 
+    def stepDepth(self, delta):
+        v = 100 if delta is None else min(max(self.depthSlider.value + delta, self.depthSlider.minimum),
+                                          self.depthSlider.maximum)
+        self.depthSlider.value = v
+
     def onDepthFromRuntime(self, percent):
         self.depthSlider.blockSignals(True)
         self.depthSlider.value = percent
@@ -198,6 +217,8 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
         lg = self.logic
         self.startButton.setText("Stop 3D" if lg.active else "Start 3D")
         self.fullButton.setEnabled(lg.active)
+        self.fullButton.setText("Full panel" if lg.vp is not None else "Full screen (F11)")
+        self.mouse.setVisible(lg.vp is None)
         self.status.setText(lg.statusText())
         self.depthLabel.setText(lg.depthText())
 
@@ -241,6 +262,13 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         self._padTimer.timeout.connect(self._padTick)
         self._pad = None
         self._padLast = 0.0
+        # Texture mode (default): see displayxr_viewport
+        self.vp = None
+        self._vpTimer = qt.QTimer()
+        self._vpTimer.setInterval(16)
+        self._vpTimer.timeout.connect(self._vpTick)
+        self._vpChecks = 0
+        self._fullPanel = None
 
     # -- status ----------------------------------------------------------
     def statusText(self):
@@ -248,6 +276,8 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
             return "3D unavailable: " + self.error
         if not self.active:
             return "3D ready"
+        if self.vp is not None:
+            return "3D active" if self.vp.drawn() > 0 else "3D starting\u2026"
         if self.hostedHwnd is None:
             return "3D starting…"
         return "3D active"
@@ -261,6 +291,8 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
                f"{'Comfortable' if ok else 'Strong'} depth · screen plane {glass:.0f} mm from the camera")
         if pushed > 0.5:
             txt += f"\nViewpoint moved back {pushed:.0f} mm to keep the depth comfortable"
+        if self.vp is not None:
+            return txt
         now = dxr.read_hosted_depth_now(self.mainHwnd())
         if now and abs(now[1] / self.rig["convergence"] - 1) > 0.02:
             txt += "\nFocus was changed by another depth control: the numbers above are approximate"
@@ -420,6 +452,10 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         return dxr.IPD_M * self.rig["json"]["ipdFactor"] / w_m
 
     # -- start / stop ----------------------------------------------------
+    def textureMode(self):
+        """In-viewport target unless DXR_SLICER_MODE=overlay or bin/ wasn't built."""
+        return displayxr_viewport.available() and os.environ.get("DXR_SLICER_MODE", "viewport") != "overlay"
+
     def start(self):
         if self.active:
             return
@@ -427,6 +463,9 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         if self.threeDWidget() is None:
             self.medicalLayout()
             slicer.app.processEvents()
+        if self.textureMode():
+            self._startViewport()
+            return
         self.rig = self._makeRig()
         os.environ[dxr.ENV_LEGACY_CAMERA_RIG] = json.dumps(self.rig["json"])
         os.environ.setdefault(dxr.ENV_HOSTED_WINDOW, "auto")
@@ -472,6 +511,9 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
     def stop(self):
         if not self.active:
             return
+        if self.vp is not None:
+            self._stopViewport()
+            return
         self.active = False
         self._stopSharedSlider()
         self._timer.stop()
@@ -502,6 +544,81 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         self._lastNow = None
         self.hostedHwnd = None
         self.lastDepth = None
+
+    # -- texture mode (in Slicer's own 3D view) ---------------------------
+    def _startViewport(self):
+        os.environ.setdefault(dxr.ENV_GAMEPAD_NAV, "0")
+        os.environ.setdefault(dxr.ENV_GAMEPAD_EMULATE, "0")
+        view = self.threeDWidget().threeDView()
+        try:
+            vp = displayxr_viewport.ViewportSession(view, self.mainHwnd(), self.viewRectPx)
+            err = vp.start()
+        except OSError as e:
+            err = f"could not load the DisplayXR host core ({e})"
+        if err:
+            self.error = err
+            self._notify()
+            return
+        self.vp = vp
+        vp.set_depth(self.depthPercent / 100.0)
+        self.active = True
+        self._vpChecks = 0
+        self._vpTimer.start()
+        self._pad = displayxr_gamepad.Navigator(view)
+        self._padLast = time.monotonic()
+        self._padTimer.start()
+        self._notify()
+
+    def _stopViewport(self):
+        self.active = False
+        self._vpTimer.stop()
+        self._padTimer.stop()
+        self._pad = None
+        if self._fullPanel is not None:
+            self.toggleFullscreen()
+        vp, self.vp = self.vp, None
+        try:
+            vp.stop()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        self.lastDepth = None
+        self._notify()
+
+    def viewportGlass(self, cam, content):
+        """Glass distance (mm from Slicer's camera): with "Keep depth comfortable",
+        a quarter of the way into the visible content (the behind budget is 3x the
+        front one), else the rotation centre; then the Screen plane slider."""
+        g = cam.GetDistance()
+        if content and self.autoScreenPlane:
+            n, f = max(content[0], 1e-3 * g), content[1]
+            if f > n:
+                g = n + 0.25 * (f - n)
+        return g * (1.0 + self.planePercent / 100.0)
+
+    def _vpTick(self):
+        vp = self.vp
+        if vp is None:
+            return
+        try:
+            cam = self.referenceCamera()
+            content = vp.content_depth(cam)
+            vp.set_camera(cam, self.viewportGlass(cam, content), content)
+            vp.tick(cam)
+            self._vpChecks += 1
+            if self._vpChecks % 15 == 0:
+                if not vp.running():
+                    self.error = vp.status() or "the 3D session ended"
+                    self._stopViewport()
+                    return
+                d = vp.depth()
+                new = (-d.front_pct / 100.0, d.behind_pct / 100.0, 0.0, d.glass)
+                if self.lastDepth != new or self._vpChecks <= 60:
+                    self.lastDepth = new
+                    self._notify()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
     # -- per-tick: window + session state -------------------------------
     def _tick(self):
@@ -554,6 +671,8 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
 
     def setDepthPercent(self, value):
         self.depthPercent = float(value)
+        if self.vp is not None:
+            self.vp.set_depth(self.depthPercent / 100.0)
         self._applyDepth()
         self._notify()
 
@@ -573,6 +692,22 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
             dxr.set_click_through(self.hostedHwnd, on)
 
     def toggleFullscreen(self):
+        if self.vp is not None:
+            # Texture mode: the 3D is Slicer's own 3D view, so full panel = that
+            # view alone, full screen; the target follows the view.
+            lm, mw = slicer.app.layoutManager(), slicer.util.mainWindow()
+            if self._fullPanel is None:
+                self._fullPanel = (lm.layout, mw.isFullScreen())
+                lm.setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView)
+                mw.showFullScreen()
+            else:
+                layout, wasFull = self._fullPanel
+                self._fullPanel = None
+                lm.setLayout(layout)
+                if not wasFull:
+                    mw.showNormal()
+                    mw.showMaximized()
+            return
         if self.hostedHwnd:
             dxr.post_f11(self.hostedHwnd)
 
@@ -614,7 +749,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         return g, b
 
     def syncCamera(self):
-        if not self.active:
+        if not self.active or self.vp is not None:
             return
         rw = self._vrRenderWindow()
         cam = self.referenceCamera()

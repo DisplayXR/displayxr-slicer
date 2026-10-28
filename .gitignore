@@ -3,3 +3,5 @@ __pycache__/
 probe/
 tests/*.out.txt
 *.png
+DisplayXR/bin/
+native/build/
