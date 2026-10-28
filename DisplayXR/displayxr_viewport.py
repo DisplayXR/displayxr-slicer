@@ -208,6 +208,24 @@ class ViewportSession:
             return f.value
         return None
 
+    def save_eyes(self, path):
+        """The last submitted eye pair, side by side (left | right), as PNG."""
+        import numpy as np
+        from vtk.util.numpy_support import numpy_to_vtk
+        pair = getattr(self, "last_pair", None)
+        if not pair:
+            return False
+        sbs = np.ascontiguousarray(np.concatenate(pair, axis=1)[::-1])  # VTK images are bottom row first
+        h, w = sbs.shape[:2]
+        img = vtk.vtkImageData()
+        img.SetDimensions(w, h, 1)
+        img.GetPointData().SetScalars(numpy_to_vtk(sbs.reshape(-1, 4), deep=True))
+        wr = vtk.vtkPNGWriter()
+        wr.SetFileName(path)
+        wr.SetInputData(img)
+        wr.Write()
+        return True
+
     def depth(self):
         d = _DepthInfo()
         self.host.dxrh_get_depth(ctypes.byref(d))
@@ -326,5 +344,6 @@ class ViewportSession:
             ren.ResetCameraClippingRange()
             self._in_eyes = False
         self.host.dxrh_submit_rgba8(imgs[0].ctypes.data, imgs[1].ctypes.data, w, h, w * 4, serial)
+        self.last_pair = imgs
         self.pairs += 1
         self.rw.Render()  # Slicer's own camera; EndEvent draws the woven frame

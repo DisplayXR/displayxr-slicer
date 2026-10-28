@@ -154,6 +154,22 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
         sampleButton.clicked.connect(lambda: self.logic.loadSample("CTChest", "CT-Chest-Contrast-Enhanced"))
         lay.addWidget(sampleButton)
 
+        import displayxr_monai
+        if displayxr_monai.available():
+            mon = qt.QGroupBox("MONAI (AI segmentation)")
+            lay.addWidget(mon)
+            ml = qt.QVBoxLayout(mon)
+            monaiButton = qt.QPushButton("AI segment organs (MONAI Auto3DSeg)")
+            monaiButton.setMinimumHeight(36)
+            monaiButton.setToolTip("Segments the loaded CT with MONAI Auto3DSeg (" + displayxr_monai.DEFAULT_MODEL + ",\n"
+                                   "local GPU inference) and shows the organs in 3D. Loads the CTLiver sample\n"
+                                   "if no CT is loaded. 3D pauses while the model runs.")
+            monaiButton.clicked.connect(self.onMonai)
+            ml.addWidget(monaiButton)
+            self.monaiLabel = qt.QLabel("")
+            self.monaiLabel.setWordWrap(True)
+            ml.addWidget(self.monaiLabel)
+
         omni = qt.QGroupBox("NVIDIA Omniverse")
         lay.addWidget(omni)
         ol = qt.QVBoxLayout(omni)
@@ -183,6 +199,16 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
             self.logic.segmentBone()
         except Exception as e:
             slicer.util.errorDisplay(str(e))
+
+    def onMonai(self):
+        self.monaiLabel.setText("Segmenting with MONAI Auto3DSeg\u2026")
+        slicer.app.processEvents()
+        try:
+            with slicer.util.tryWithErrorDisplay("MONAI segmentation failed", waitCursor=True):
+                n, secs = self.logic.monaiSegment()
+                self.monaiLabel.setText(f"{n} structures segmented in {secs:.0f} s; shown in 3D.")
+        except Exception as e:
+            self.monaiLabel.setText(str(e))
 
     def onUsd(self):
         import displayxr_usd
@@ -399,6 +425,28 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         disp.SetVisibility(True)
         if slicer.app.layoutManager():
             slicer.util.resetThreeDViews()
+
+    def monaiSegment(self, sample=None):
+        """MONAI Auto3DSeg on the latest CT (or `sample`), shown in 3D. 3D is
+        paused during inference (one heavy GPU job at a time) and resumed after.
+        Returns (number of segments, inference seconds)."""
+        import displayxr_monai
+        vols = slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")
+        if sample or not vols:
+            import SampleData
+            vol = SampleData.downloadSample(sample or displayxr_monai.DEFAULT_SAMPLE)
+        else:
+            vol = vols[-1]
+        was3D = self.active
+        if was3D:
+            self.stop()
+        try:
+            seg, secs = displayxr_monai.segment(vol)
+            n = displayxr_monai.show_in_3d(seg)
+        finally:
+            if was3D:
+                self.start()
+        return n, secs
 
     def segmentBone(self, threshold=200.0, name="Bone"):
         """Threshold the (first) loaded scalar volume into a smoothed segment."""
