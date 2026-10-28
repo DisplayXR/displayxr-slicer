@@ -35,9 +35,9 @@ def build_stage():
     ref = stage.DefinePrim("/World/Slicer", "Xform")
     ref.GetReferences().AddReference(USD)
     dome = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
-    dome.CreateIntensityAttr(1000.0)
+    dome.CreateIntensityAttr(float(os.environ.get("DXR_SLICER_DOME", "300")))
     key = UsdLux.DistantLight.Define(stage, "/World/KeyLight")
-    key.CreateIntensityAttr(2500.0)
+    key.CreateIntensityAttr(float(os.environ.get("DXR_SLICER_KEY", "1200")))
     UsdGeom.Xformable(key).AddRotateXYZOp().Set(Gf.Vec3f(-45, -20, 0))
 
     cache = UsdGeom.BBoxCache(0, [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
@@ -48,13 +48,20 @@ def build_stage():
     dist = radius * 3.0
     p = math.radians(PITCH)
     eye = Gf.Vec3d(mid[0], mid[1] + dist * math.sin(p), mid[2] - dist * math.cos(p))
+    # The 3D follows Kit's perspective camera (/OmniverseKit_Persp; while XR runs
+    # the viewport shows /_xr and displayxr.omniverse falls back to it). Kit keeps
+    # that camera on the session layer, so pose it there.
+    from pxr import Usd
     from omni.kit.viewport.utility import get_active_viewport
-    vp = get_active_viewport()
-    cam = stage.GetPrimAtPath(vp.camera_path)
+    get_active_viewport().camera_path = "/OmniverseKit_Persp"
+    persp = stage.GetPrimAtPath("/OmniverseKit_Persp")
     m = Gf.Matrix4d().SetLookAt(eye, Gf.Vec3d(mid), Gf.Vec3d(0, 1, 0)).GetInverse()
-    xf = UsdGeom.Xformable(cam)
-    xf.ClearXformOpOrder()
-    xf.AddTransformOp().Set(m)
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        xf = UsdGeom.Xformable(persp)
+        xf.ClearXformOpOrder()
+        xf.AddTransformOp().Set(m)
+    got = UsdGeom.Xformable(persp).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+    log("persp camera now at", tuple(round(v, 1) for v in got))
     log("stage: bbox mid", tuple(round(v, 1) for v in mid), "size", tuple(round(v, 1) for v in size),
         "cm; camera", tuple(round(v, 1) for v in eye), "pitch", PITCH)
     return rng
@@ -82,7 +89,9 @@ async def main():
         s.frame_selection()
         for _ in range(300):
             await app.next_update_async()
-        log("running", s.is_running(), "comfortable range (m)", s.comfortable_depth_range())
+        from omni.kit.viewport.utility import get_active_viewport
+        log("running", s.is_running, "viewport camera", get_active_viewport().camera_path,
+            "comfortable range (m)", s.comfortable_depth_range())
         log("READY")
     except Exception:
         log("EXC", traceback.format_exc())
