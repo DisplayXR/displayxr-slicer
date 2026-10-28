@@ -79,6 +79,32 @@ LeiaSR ≥ 1.39 gives the windowless phase.
 All runtime/extension internals the module relies on are in
 `DisplayXR/displayxr_coupling.py` (none of them is a public contract).
 
+## MONAI AI segmentation (demo)
+
+`Launch-Slicer-MONAI-3D.cmd` runs the live segment in one command: the CTLiver CT →
+**MONAI Auto3DSeg** (local GPU inference, model *Abdominal organs TS2*) → the organs
+as 3D surfaces in Slicer's own 3D view → Start 3D → *Send to Omniverse (USD)*. The
+module panel has the same as an **AI segment organs** button (3D pauses while the
+model runs). The 3D view's corner credits the data and the model.
+
+One-time setup (asks nothing; needs ~6 GB of disk for PyTorch + MONAI):
+
+    Slicer.exe --no-splash --no-main-window --python-script tools\install_extension.py MONAIAuto3DSeg
+    Slicer.exe --no-splash --no-main-window --python-script tools\setup_monai.py
+
+`setup_monai.py` installs PyTorch with CUDA 12.8 (RTX 50-series needs it) and MONAI
+into Slicer's Python, and downloads the model and the sample.
+
+| | Licence |
+|---|---|
+| MONAIAuto3DSeg extension | MIT |
+| Model: Abdominal organs TS2 (TotalSegmentator V2 data) | CC BY 4.0 |
+| CT: CTLiver (Medical Segmentation Decathlon, Task03 liver_100) | CC BY-SA 4.0 |
+
+Measured 2026-10-28 (RTX 5070 Ti): 19 organs in ~17 s of inference; the whole live
+segment (load → segment → 3D → USD of 19 meshes) in ~52 s. Depth at 100 %: −0.140 % /
++0.27…0.37 % of panel width. Seated on the Leia SR panel: "looks good".
+
 ## Platforms
 
 | OS | Status |
