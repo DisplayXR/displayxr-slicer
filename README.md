@@ -11,7 +11,12 @@ The slice views stay 2D beside it.
 DisplayXR runtime v2.55.0 + Leia plug-in 2.18.3; default launcher; CT chest volume
 rendering at Depth 100 %, inside the 0.14 % / 0.42 % budget; ~28 eye pairs/s).
 
-> Research and demonstration software. Not a medical device; not for diagnosis.
+> **Preview release (v0.x). Research use only, not for diagnosis.** Research and
+> demonstration software; not a medical device. The module will move onto the shared
+> DisplayXR host library in a later release. Install it on an R&D workstation, not on a
+> clinical unit, and leave any workstation that runs a vendor's clinical 3D viewer on its
+> shipped software. Tested on a newer Leia SR runtime; older Leia SR versions are being
+> checked.
 
 ## Quick start (Windows)
 
@@ -100,6 +105,11 @@ into Slicer's Python, and downloads the model and the sample.
 | MONAIAuto3DSeg extension | MIT |
 | Model: Abdominal organs TS2 (TotalSegmentator V2 data) | CC BY 4.0 |
 | CT: CTLiver (Medical Segmentation Decathlon, Task03 liver_100) | CC BY-SA 4.0 |
+
+No model weights or patient data are bundled in this repository. `setup_monai.py`
+downloads the *Abdominal organs TS2* weights (CC BY 4.0, trained on TotalSegmentator V2
+data; credit the authors when you show results) and the CTLiver sample (CC BY-SA 4.0).
+AI segmentation output is for research and demonstration only, not for diagnosis.
 
 Measured 2026-10-28 (RTX 5070 Ti): 19 organs in ~17 s of inference; the whole live
 segment (load → segment → 3D → USD of 19 meshes) in ~52 s. Depth at 100 %: −0.140 % /
