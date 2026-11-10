@@ -134,6 +134,11 @@ budget).
 
 - `test_viewport.py`: texture mode on the CT chest: woven frames drawn in the 3D view at its exact size, eye projections against the core's eyes, depth readout, Depth 50 %, clean stop. Run with `DXR_PLUGIN_EXCLUSIVE=sim-display`.
 - `test_picking.py`: spheres at known depths and offsets; each is clicked with markups placement where the viewer sees its centre, picking from the centre eye and then from the mono camera. Logs how far each placed point is from the sphere's surface and from the viewer's ray. Run with `DXR_PLUGIN_EXCLUSIVE=sim-display`.
+  Measured (sim-display, Slicer 5.12.4, DisplayXR 2.57.1): centre eye: all 5 spheres hit, 0.03 mm off the surface and
+  0.21 mm off the viewer's ray at worst (the click's pixel rounding); mono: 3 of 5 missed their sphere, up to 8.7 mm
+  off the ray. Same pair rate either way.
+- `test_centre_eye.py`: plain Python, no Slicer: the centre-eye solve against known windows (rotated rig, tilt, depth
+  offset, coincident eyes, mm scale).
 - `seated_start.py`: loads the CT chest and starts 3D for a person at the panel; logs rate, drawn frames and depth to `tests/seated.out.txt`.
 - `test_live_sliders.py` / `test_live_depth.py`: live Depth / Screen plane sliders and raw `DXR_HostedDepth`, captured as atlases (sim-display).
 - `test_mouse_passthrough.py`: a posted drag over the 3D window rotates Slicer's camera.
