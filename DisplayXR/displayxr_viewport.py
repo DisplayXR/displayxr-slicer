@@ -13,7 +13,19 @@ Per tick:
   1. publish the 3D view's rect (main-window client px) as the target;
   2. hand the core Slicer's camera (pose, view angle, glass, content depth);
   3. if the core located new eyes, render both, read them back and submit;
-  4. render once more with Slicer's camera: EndEvent draws the woven frame.
+  4. render once more (the display pass): EndEvent draws the woven frame.
+
+Picking goes through the rig's centre eye, not Slicer's mono camera. The core
+moves the eyes off Slicer's camera (pushed back to the true-geometry glass,
+pitched up to the nominal viewer, offset by the tracked head), so the mono
+camera's ray through the cursor misses what the viewer sees there. The centre
+eye of the pair on screen is swapped in as the renderer's active camera for
+the display pass (so the z-buffer the quick picker reads is the centre eye's)
+and for each mouse / key event (so the accurate pickers, markups hover and
+placement use it); Slicer's camera is back as soon as the event is handled.
+Navigation is unaffected: Slicer's camera widget moves the camera node's
+camera, never the renderer's active one. DXR_SLICER_PICK=mono turns it off
+(A/B checks).
 """
 
 import ctypes
@@ -120,6 +132,50 @@ def eye_camera(cam, eye, glass):
     return (tr - tl) / (tu - td)  # aspect the eye expects
 
 
+def _dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def centre_eye(eyes):
+    """The cyclopean eye of a stereo pair: at the midpoint of the two eyes, with
+    eye 0's orientation, and a frustum through the same window (the 3D view on
+    the glass) as both eyes' frusta. A point is perceived on screen where its two
+    eye images average, which is where this eye sees it, so the ray from it
+    through the cursor is the one the viewer looks along. Exact when the eyes
+    share an orientation (the runtime's eyes are display-aligned)."""
+    e0, e1 = eyes[0], eyes[1]
+    q = (e0.pose.qx, e0.pose.qy, e0.pose.qz, e0.pose.qw)
+    p0 = (e0.pose.px, e0.pose.py, e0.pose.pz)
+    p1 = (e1.pose.px, e1.pose.py, e1.pose.pz)
+    right, up, back = _axes_from_quat(q)
+    d = [p1[i] - p0[i] for i in range(3)]
+    x1, y1, z1 = _dot(d, right), _dot(d, up), _dot(d, back)   # eye 1 in eye 0's frame
+    t0 = [math.tan(a) for a in (e0.angle_left, e0.angle_right, e0.angle_up, e0.angle_down)]
+    t1 = [math.tan(a) for a in (e1.angle_left, e1.angle_right, e1.angle_up, e1.angle_down)]
+    # Both look down -z; with the glass at z = zs, eye i's window edge sits at
+    # offset_i + tan_i * (z_i - zs). Eye 0 is the origin, so an edge both eyes
+    # share gives zs = (offset_1 + tan_1 * z1) / (tan_1 - tan_0). Take the
+    # best-conditioned edge; none (coincident eyes: no viewer tracked) -> average.
+    zs, best = None, 1e-6
+    for k, off in ((0, x1), (1, x1), (2, y1), (3, y1)):
+        den = t1[k] - t0[k]
+        if abs(den) > best:
+            cand = (off + t1[k] * z1) / den
+            if cand < min(0.0, z1):  # the glass is in front of both eyes
+                zs, best = cand, abs(den)
+    cx, cy, cz = x1 / 2.0, y1 / 2.0, z1 / 2.0
+    if zs is None:
+        tans = [(t0[k] + t1[k]) / 2.0 for k in range(4)]
+    else:
+        dc = cz - zs
+        edges = [-t * zs for t in t0]  # window edges in eye 0's frame, on the glass
+        tans = [(edges[0] - cx) / dc, (edges[1] - cx) / dc, (edges[2] - cy) / dc, (edges[3] - cy) / dc]
+    c = _Eye()
+    c.pose = _Pose((p0[0] + p1[0]) / 2.0, (p0[1] + p1[1]) / 2.0, (p0[2] + p1[2]) / 2.0, *q)
+    c.angle_left, c.angle_right, c.angle_up, c.angle_down = (math.atan(t) for t in tans)
+    return c
+
+
 def set_exact_frustum(cam, eye):
     """Pin the eye's projection to its exact tangents (VTK otherwise takes the
     width from the render's aspect, off when the panel's pixels aren't square,
@@ -164,6 +220,15 @@ class ViewportSession:
         self.content = None            # (near, far) along the view, mm
         self.aspect_error = 0.0
         self.last_eyes = None
+        # Picking from the centre eye of the pair on screen (see the module doc).
+        self.pick_centre = os.environ.get("DXR_SLICER_PICK", "centre").lower() != "mono"
+        self.centre = None             # _Eye of the pair on screen, None until one is
+        self.centre_cam = vtk.vtkCamera()
+        self._main_obs = []            # (renderer, tag) for the display pass
+        self._input_obs = []           # (interactor, tag)
+        self._render_saved = None      # active camera to put back after a display pass
+        self._event_saved = None       # Slicer's camera to put back after an event
+        self._restore_queued = False
 
     # -- lifecycle --------------------------------------------------------
     def start(self):
@@ -184,6 +249,7 @@ class ViewportSession:
         if self._obs is not None:
             self._obs_ren.RemoveObserver(self._obs)
         self._obs = self._obs_ren = None
+        self._unobserve_picking()
         self.view.scheduleRender()
 
     def running(self):
@@ -251,10 +317,105 @@ class ViewportSession:
         ren = self._last_renderer()
         self._obs_ren = ren
         self._obs = ren.AddObserver(vtk.vtkCommand.EndEvent, self._on_end)
+        if self.pick_centre:
+            self._observe_picking()
 
     def _on_end(self, *_):
         if not self._in_eyes:
             self.gl.dxs_present()
+
+    # -- picking from the centre eye ----------------------------------------
+    #: Interactor events Slicer's interactor style handles (and picks on).
+    INPUT_EVENTS = ("MouseMoveEvent", "LeftButtonPressEvent", "LeftButtonReleaseEvent",
+                    "LeftButtonDoubleClickEvent", "MiddleButtonPressEvent", "MiddleButtonReleaseEvent",
+                    "MiddleButtonDoubleClickEvent", "RightButtonPressEvent", "RightButtonReleaseEvent",
+                    "RightButtonDoubleClickEvent", "MouseWheelForwardEvent", "MouseWheelBackwardEvent",
+                    "EnterEvent", "LeaveEvent", "KeyPressEvent", "KeyReleaseEvent", "CharEvent",
+                    "StartPinchEvent", "PinchEvent", "EndPinchEvent", "StartRotateEvent", "RotateEvent",
+                    "EndRotateEvent", "StartPanEvent", "PanEvent", "EndPanEvent", "TapEvent", "LongTapEvent")
+    #: Above Slicer's interactor style (priority 0), so the swap precedes its picks.
+    INPUT_PRIORITY = 10.0
+
+    def _observe_picking(self):
+        ren = self._main_renderer()
+        self._main_obs = [(ren, ren.AddObserver(vtk.vtkCommand.StartEvent, self._on_main_start)),
+                          (ren, ren.AddObserver(vtk.vtkCommand.EndEvent, self._on_main_end))]
+        iren = self.rw.GetInteractor()
+        if iren is not None:
+            for name in self.INPUT_EVENTS:
+                try:
+                    self._input_obs.append((iren, iren.AddObserver(name, self._on_input, self.INPUT_PRIORITY)))
+                except Exception:
+                    pass  # an event this VTK doesn't have
+
+    def _unobserve_picking(self):
+        for obj, tag in self._main_obs + self._input_obs:
+            obj.RemoveObserver(tag)
+        self._main_obs, self._input_obs = [], []
+        self._restore_slicer_camera()
+        self.centre = None
+
+    def _centre_ready(self):
+        return self.pick_centre and self.centre is not None and not self._in_eyes
+
+    def _on_main_start(self, *_):
+        """Display pass: render it from the centre eye. Its colour is replaced by
+        the woven frame; its depth is what the quick (z-buffer) picker reads."""
+        if not self._centre_ready():
+            return
+        ren = self._main_renderer()
+        self._render_saved = ren.GetActiveCamera()
+        ren.SetActiveCamera(self.centre_cam)
+        if hasattr(self.centre_cam, "SetUseExplicitProjectionTransformMatrix"):
+            self.centre_cam.SetUseExplicitProjectionTransformMatrix(False)
+        ren.ResetCameraClippingRange()
+        set_exact_frustum(self.centre_cam, self.centre)
+
+    def _on_main_end(self, *_):
+        if self._render_saved is not None:
+            self._main_renderer().SetActiveCamera(self._render_saved)
+            self._render_saved = None
+
+    def _on_input(self, *_):
+        """Before Slicer's interactor style sees the event: centre eye active."""
+        if not self._centre_ready():
+            return
+        ren = self._main_renderer()
+        cur = ren.GetActiveCamera()
+        if cur is self.centre_cam:
+            return
+        self._event_saved = cur
+        ren.SetActiveCamera(self.centre_cam)
+        if not self._restore_queued:
+            import qt
+            self._restore_queued = True
+            qt.QTimer.singleShot(0, self._restore_slicer_camera)  # once the event is handled
+
+    def _restore_slicer_camera(self):
+        self._restore_queued = False
+        saved, self._event_saved = self._event_saved, None
+        if saved is None:
+            return
+        ren = self._main_renderer()
+        if ren.GetActiveCamera() is self.centre_cam:
+            ren.SetActiveCamera(saved)
+
+    def pick_ray(self, x, y):
+        """World ray (origin, unit direction) through VTK display pixel (x, y),
+        bottom-left origin, from the camera picking uses. For tests."""
+        ren = self._main_renderer()
+        cam = self.centre_cam if self._centre_ready() else ren.GetActiveCamera()
+        prev = ren.GetActiveCamera()
+        ren.SetActiveCamera(cam)
+        try:
+            far = [0.0] * 4
+            vtk.vtkInteractorObserver.ComputeDisplayToWorld(ren, float(x), float(y), 1.0, far)
+            o = cam.GetPosition()
+            v = [far[i] / far[3] - o[i] for i in range(3)]
+            n = math.sqrt(_dot(v, v)) or 1.0
+            return o, [c / n for c in v]
+        finally:
+            ren.SetActiveCamera(prev)
 
     def content_depth(self, cam):
         """Nearest/farthest visible content along the view direction (mm), or None."""
@@ -346,4 +507,7 @@ class ViewportSession:
         self.host.dxrh_submit_rgba8(imgs[0].ctypes.data, imgs[1].ctypes.data, w, h, w * 4, serial)
         self.last_pair = imgs
         self.pairs += 1
-        self.rw.Render()  # Slicer's own camera; EndEvent draws the woven frame
+        # This pair is what the view shows from here on: pick through its centre eye.
+        self.centre = centre_eye(eyes)
+        eye_camera(self.centre_cam, self.centre, self.glass or slicer_cam.GetDistance())
+        self.rw.Render()  # display pass (centre eye); EndEvent draws the woven frame

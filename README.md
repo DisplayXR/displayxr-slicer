@@ -42,6 +42,7 @@ only with the unreleased hosted-window embed #2332).
 | Session | `native/core`: the app-neutral host core shared with the MotionBuilder, Nuke and Houdini adapters (`dxrh_*` C API), built with Slicer's identity. It runs the OpenXR session on its own thread with `XR_DXR_win32_window_binding` v9 (texture target: Slicer's main window + the 3D view's rect), the true-geometry rig and the comfort budget. |
 | Draw-back | `native/gl_present.cpp`: in the last `vtkRenderer`'s EndEvent, the woven shared D3D11 texture is blitted into the 3D view through WGL_NV_DX_interop2, one texel per pixel (VTK's core-profile context, so a framebuffer blit). Skipped whenever the view and the published rect disagree in size. |
 | Camera | Slicer's 3D camera is the only camera: its pose, view angle and content depth go to the core every frame; mouse and gamepad move it as usual. The core keeps Slicer's framing (pull-back along the view axis, #2422). |
+| Picking | From the rig's centre eye, not Slicer's mono camera: the eyes sit off Slicer's camera (pull-back, pitch to the nominal viewer, tracked head), so the mono ray through the cursor misses what the viewer sees there. The centre eye of the pair on screen (midpoint of the eyes, frustum through the same window) is the renderer's active camera during the display pass (the z-buffer the quick picker reads) and during each mouse / key event (accurate pickers, markups hover and placement); Slicer's camera is back as soon as the event is handled, and navigation still moves Slicer's camera node. `DXR_SLICER_PICK=mono` turns it off. |
 | Depth | Glass a quarter of the way into the visible content ("Keep depth comfortable"), the core fits the eye separation to the budget (0.14 % front / 0.42 % behind of panel width); Depth − / + / Reset in 25 % steps and the Depth slider (above 100 % is an explicit opt-in); Screen plane moves the glass. |
 | Display values | Panel size and nominal viewing distance from the runtime's display info; the comfort budget is a constant until display info carries it (#2388). |
 
@@ -132,6 +133,12 @@ budget).
 `Slicer.exe --additional-module-paths DisplayXR --python-script tests/<file>.py`:
 
 - `test_viewport.py`: texture mode on the CT chest: woven frames drawn in the 3D view at its exact size, eye projections against the core's eyes, depth readout, Depth 50 %, clean stop. Run with `DXR_PLUGIN_EXCLUSIVE=sim-display`.
+- `test_picking.py`: spheres at known depths and offsets; each is clicked with markups placement where the viewer sees its centre, picking from the centre eye and then from the mono camera. Logs how far each placed point is from the sphere's surface and from the viewer's ray. Run with `DXR_PLUGIN_EXCLUSIVE=sim-display`.
+  Measured (sim-display, Slicer 5.12.4, DisplayXR 2.57.1): centre eye: all 5 spheres hit, 0.03 mm off the surface and
+  0.21 mm off the viewer's ray at worst (the click's pixel rounding); mono: 3 of 5 missed their sphere, up to 8.7 mm
+  off the ray. Same pair rate either way.
+- `test_centre_eye.py`: plain Python, no Slicer: the centre-eye solve against known windows (rotated rig, tilt, depth
+  offset, coincident eyes, mm scale).
 - `seated_start.py`: loads the CT chest and starts 3D for a person at the panel; logs rate, drawn frames and depth to `tests/seated.out.txt`.
 - `test_live_sliders.py` / `test_live_depth.py`: live Depth / Screen plane sliders and raw `DXR_HostedDepth`, captured as atlases (sim-display).
 - `test_mouse_passthrough.py`: a posted drag over the 3D window rotates Slicer's camera.
