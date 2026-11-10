@@ -3,8 +3,10 @@
 Glasses-free 3D of 3D Slicer's 3D view on DisplayXR displays (tested on a Leia SR
 15.6" panel). The 3D is drawn **inside Slicer's own 3D view** (the texture target,
 runtime v2.55+): Slicer renders both eyes, and the woven image goes back into the
-view, so nothing covers Slicer's menus, markups or mouse. **Full panel** shows the
-3D view alone on the whole panel. Rotate, pan and zoom with the mouse as usual.
+view, so nothing covers Slicer's menus, markups or mouse. **Full panel** (F11, or the button; Esc
+or F11 again to leave) shows the 3D view alone on the whole panel, with Slicer's panels,
+toolbars and menu hidden. F11 is the module's only while 3D is active; an F11 Slicer or
+an extension binds gets it back on Stop. Rotate, pan and zoom with the mouse as usual.
 The slice views stay 2D beside it.
 
 **Seated check, 2026-10-28: Pass** (Leia SR panel; 3D Slicer 5.12.4; installed
@@ -136,6 +138,9 @@ budget).
 - `test_live_sliders.py` / `test_live_depth.py`: live Depth / Screen plane sliders and raw `DXR_HostedDepth`, captured as atlases (sim-display).
 - `test_mouse_passthrough.py`: a posted drag over the 3D window rotates Slicer's camera.
 - `test_gamepad.py`: a fake pad orbits, pans, zooms and resets Slicer's camera with 3D on; the 3D follows and depth stays in budget.
+- `test_f11.py`: real F11 / Esc keystrokes: nothing before 3D; F11 in and out of Full panel (the 3D view fills
+  the screen, the weave follows); Esc leaves it, or first cancels a markups placement; another F11 binding is
+  taken over only while 3D runs; Stop in Full panel restores the layout. Run with `DXR_PLUGIN_EXCLUSIVE=sim-display`.
 - `test_functional.py`: start, mouse hit-test through the 3D, camera sync,
   comfort solver after zoom, F11 round trip, stop/restart.
 - `calibrate_spheres.py`: spheres at known depths. Run with

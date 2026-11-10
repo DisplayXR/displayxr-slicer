@@ -141,6 +141,7 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
         lay.addLayout(row)
         self.fullButton = qt.QPushButton("Full screen (F11)")
         self.fullButton.setMinimumHeight(36)
+        self.fullButton.setToolTip("Fullscreen (F11)")
         self.fullButton.clicked.connect(self.logic.toggleFullscreen)
         row.addWidget(self.fullButton)
         layoutButton = qt.QPushButton("Medical layout")
@@ -243,7 +244,10 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
         lg = self.logic
         self.startButton.setText("Stop 3D" if lg.active else "Start 3D")
         self.fullButton.setEnabled(lg.active)
-        self.fullButton.setText("Full panel" if lg.vp is not None else "Full screen (F11)")
+        if lg.vp is not None:
+            self.fullButton.setText("Exit full panel" if lg._fullPanel is not None else "Full panel")
+        else:
+            self.fullButton.setText("Full screen (F11)")
         self.mouse.setVisible(lg.vp is None)
         self.status.setText(lg.statusText())
         self.depthLabel.setText(lg.depthText())
@@ -295,6 +299,8 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         self._vpTimer.timeout.connect(self._vpTick)
         self._vpChecks = 0
         self._fullPanel = None
+        self._keys = None          # (F11, Esc) QShortcuts while 3D is active
+        self._takenF11 = []        # (QAction, shortcuts) whose F11 we took over
 
     # -- status ----------------------------------------------------------
     def statusText(self):
@@ -557,6 +563,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
             return
         self.active = True
         self.hostedHwnd = None
+        self._installKeys()
         self._cameraObs = cam.AddObserver(vtk.vtkCommand.ModifiedEvent, lambda *a: self.syncCamera())
         self._timer.start()
         self._pad = displayxr_gamepad.Navigator(self.threeDWidget().threeDView())
@@ -572,6 +579,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
             self._stopViewport()
             return
         self.active = False
+        self._removeKeys()
         self._stopSharedSlider()
         self._timer.stop()
         self._padTimer.stop()
@@ -620,6 +628,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         vp.set_depth(self.depthPercent / 100.0)
         self.active = True
         self._vpChecks = 0
+        self._installKeys()
         self._vpTimer.start()
         self._pad = displayxr_gamepad.Navigator(view)
         self._padLast = time.monotonic()
@@ -633,6 +642,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         self._pad = None
         if self._fullPanel is not None:
             self.toggleFullscreen()
+        self._removeKeys()
         vp, self.vp = self.vp, None
         try:
             vp.stop()
@@ -751,22 +761,93 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
     def toggleFullscreen(self):
         if self.vp is not None:
             # Texture mode: the 3D is Slicer's own 3D view, so full panel = that
-            # view alone, full screen; the target follows the view.
+            # view alone filling the screen (no panels, toolbars, menu or view
+            # controller); the target follows the view. F11 or Esc comes back.
             lm, mw = slicer.app.layoutManager(), slicer.util.mainWindow()
             if self._fullPanel is None:
-                self._fullPanel = (lm.layout, mw.isFullScreen())
+                chrome = self._chromeWidgets()
+                self._fullPanel = (lm.layout, mw.isFullScreen(), [(w, w.isVisible()) for w in chrome])
                 lm.setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutOneUp3DView)
+                slicer.app.processEvents()
+                for w in self._chromeWidgets():
+                    w.setVisible(False)
                 mw.showFullScreen()
             else:
-                layout, wasFull = self._fullPanel
+                layout, wasFull, chrome = self._fullPanel
                 self._fullPanel = None
                 lm.setLayout(layout)
+                for w, vis in chrome:
+                    try:
+                        w.setVisible(vis)
+                    except Exception:
+                        pass  # gone with the layout
                 if not wasFull:
                     mw.showNormal()
                     mw.showMaximized()
+            if self._keys:
+                self._keys[1].setEnabled(self._fullPanel is not None)
+            self._notify()
             return
         if self.hostedHwnd:
             dxr.post_f11(self.hostedHwnd)
+
+    def _chromeWidgets(self):
+        """What Full panel hides: docks (module panel, Python console, ...),
+        toolbars, menu and status bar, and the 3D view's controller bar."""
+        mw = slicer.util.mainWindow()
+        ws = list(mw.findChildren(qt.QDockWidget)) + list(mw.findChildren(qt.QToolBar))
+        ws += [mw.menuBar(), mw.statusBar()]
+        tdw = self.threeDWidget()
+        if tdw is not None and tdw.threeDController() is not None:
+            ws.append(tdw.threeDController())
+        return [w for w in ws if w is not None]
+
+    # -- F11 / Esc while 3D is active ------------------------------------
+    def _installKeys(self):
+        """F11 toggles Full panel and Esc leaves it, anywhere in Slicer, only while
+        3D is active. An action of Slicer's (or an extension's) bound to F11 loses
+        that key until 3D stops, then gets it back."""
+        if self._keys is not None:
+            return
+        mw = slicer.util.mainWindow()
+        self._takenF11 = []
+        for a in mw.findChildren(qt.QAction):
+            ks = list(a.shortcuts())
+            if any(k.toString() == "F11" for k in ks):
+                self._takenF11.append((a, ks))
+                a.setShortcuts([k for k in ks if k.toString() != "F11"])
+        f11 = qt.QShortcut(qt.QKeySequence("F11"), mw)
+        f11.setContext(qt.Qt.ApplicationShortcut)
+        f11.connect("activated()", self.toggleFullscreen)
+        esc = qt.QShortcut(qt.QKeySequence("Esc"), mw)
+        esc.setContext(qt.Qt.ApplicationShortcut)
+        esc.connect("activated()", self._onEscape)
+        esc.setEnabled(False)  # only while Full panel is on (texture mode)
+        self._keys = (f11, esc)
+
+    def _removeKeys(self):
+        if self._keys is not None:
+            for k in self._keys:
+                k.setEnabled(False)
+                k.setParent(None)
+                k.deleteLater()
+            self._keys = None
+        for a, ks in self._takenF11:
+            try:
+                a.setShortcuts(ks)
+            except Exception:
+                pass
+        self._takenF11 = []
+
+    def _onEscape(self):
+        """Esc in Full panel: a markups placement in progress is cancelled first
+        (what Esc means to Slicer there), otherwise Full panel ends."""
+        inode = slicer.app.applicationLogic().GetInteractionNode()
+        if inode is not None and inode.GetCurrentInteractionMode() == inode.Place:
+            inode.SetCurrentInteractionMode(inode.ViewTransform)
+            return
+        if self._fullPanel is not None:
+            self.toggleFullscreen()
 
     # -- camera sync and screen plane ------------------------------------
     def _vrRenderWindow(self):
