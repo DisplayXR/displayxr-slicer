@@ -215,7 +215,7 @@ class ViewportSession:
         pair = getattr(self, "last_pair", None)
         if not pair:
             return False
-        sbs = np.ascontiguousarray(np.concatenate(pair, axis=1)[::-1])  # VTK images are bottom row first
+        sbs = np.concatenate(pair, axis=1)  # bottom row first, as vtkImageData wants
         h, w = sbs.shape[:2]
         img = vtk.vtkImageData()
         img.SetDimensions(w, h, 1)
@@ -313,14 +313,13 @@ class ViewportSession:
         return int(w), int(h)
 
     def _render_pair(self, eyes, serial, slicer_cam):
-        import numpy as np
         ren = self._main_renderer()
         w, h = self.render_size()
         if w <= 0 or h <= 0:
             self.view.forceRender()  # let Qt size the render window; eyes next tick
             self.serial = 0
             return
-        imgs = []
+        imgs, arrs = [], []
         self._in_eyes = True
         try:
             for i in range(2):
@@ -337,13 +336,21 @@ class ViewportSession:
                 arr = vtk.vtkUnsignedCharArray()
                 self.rw.GetRGBACharPixelData(0, 0, w - 1, h - 1, 0, arr)
                 from vtk.util.numpy_support import vtk_to_numpy
-                img = vtk_to_numpy(arr).reshape(h, w, 4)[::-1]  # top row first
-                imgs.append(np.ascontiguousarray(img))
+                px = vtk_to_numpy(arr)  # bottom row first, tightly packed: w * h * 4 bytes
+                if px.size != w * h * 4 or not px.flags["C_CONTIGUOUS"]:
+                    raise RuntimeError(f"eye readback is {px.size} bytes, expected {w * h * 4}")
+                arrs.append(arr)  # keeps the pixels alive
+                imgs.append(px.reshape(h, w, 4))
         finally:
             ren.SetActiveCamera(slicer_cam)
             ren.ResetCameraClippingRange()
             self._in_eyes = False
-        self.host.dxrh_submit_rgba8(imgs[0].ctypes.data, imgs[1].ctypes.data, w, h, w * 4, serial)
-        self.last_pair = imgs
+        # Last row + negative stride: the core reads the bottom-up readback top row
+        # first, so no flipped copy is made here.
+        last_row = (h - 1) * w * 4
+        self.host.dxrh_submit_rgba8(imgs[0].ctypes.data + last_row, imgs[1].ctypes.data + last_row,
+                                    w, h, -w * 4, serial)
+        self.last_pair = imgs  # bottom row first, as VTK reads them back
+        self._last_pair_arrays = arrs
         self.pairs += 1
         self.rw.Render()  # Slicer's own camera; EndEvent draws the woven frame

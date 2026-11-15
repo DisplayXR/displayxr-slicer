@@ -98,6 +98,10 @@ DXRH_API int dxrh_render_size(int *width, int *height);
 DXRH_API int dxrh_window_size(int *width, int *height);
 
 // Hands one stereo pair to the 3D window; copied, so the caller may free.
+// Row y (top row first) is read at left/right + y * stride bytes. A negative
+// stride, with left/right pointing at the last row in memory, takes a
+// bottom-up buffer (an OpenGL / VTK readback) without a flipped copy;
+// |stride| >= width * 4 either way. Returns 0 on success.
 DXRH_API int dxrh_submit_rgba8(const uint8_t *left, const uint8_t *right, int width, int height, int stride,
                                uint32_t serial);
 

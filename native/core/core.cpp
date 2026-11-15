@@ -20,6 +20,8 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <future>
 #include <mutex>
@@ -56,7 +58,10 @@ struct Shared
 	int sharedW = 0, sharedH = 0;
 	uint64_t textureState = 0;
 
+	// Newest submitted pair. Pixels are copied in and uploaded outside the
+	// mutex: buffers only change hands (std::swap) under it, both eyes together.
 	std::vector<uint8_t> pending[2];
+	std::vector<uint8_t> spare[2]; // recycled buffers for the next submit
 	int pendingW = 0, pendingH = 0;
 	uint32_t pendingSerial = 0;
 	bool fresh = false;
@@ -379,6 +384,11 @@ void threadMain(std::promise<std::string> *started)
 	EyeView submitted[2]{};
 	bool haveImage = false;
 	uint64_t frame = 0;
+	// The pair taken from g.pending, uploaded outside the mutex.
+	std::vector<uint8_t> upload[2];
+	int uploadW = 0, uploadH = 0;
+	EyeView uploadEyes[2]{};
+	bool haveUpload = false;
 
 	while (!g_quit && !s.exitRequested()) {
 		MSG msg;
@@ -440,17 +450,29 @@ void threadMain(std::promise<std::string> *started)
 			g.windowW = cw;
 			g.windowH = ch;
 			g.status = s.status();
-			if (g.fresh && eyesTex.ensure(s.device(), g.pendingW, g.pendingH)) {
-				for (int i = 0; i < 2; i++) {
-					s.context()->UpdateSubresource(eyesTex.tex[i], 0, nullptr, g.pending[i].data(),
-					                               (UINT)g.pendingW * 4, 0);
-				}
+			if (g.fresh) {
+				// Take the whole pair (both eyes of one submit) and upload it
+				// after unlocking; our previous buffers go back for reuse.
+				std::swap(upload[0], g.pending[0]);
+				std::swap(upload[1], g.pending[1]);
+				uploadW = g.pendingW;
+				uploadH = g.pendingH;
 				// Eyes this pair was rendered from; if they fell out of the ring,
 				// the newest are the best guess.
 				const bool known = g.pendingSerial != 0 && g.serial - g.pendingSerial < kEyeRing;
-				std::memcpy(submitted, g.eyes[(known ? g.pendingSerial : g.serial) % kEyeRing], sizeof(submitted));
-				haveImage = true;
+				std::memcpy(uploadEyes, g.eyes[(known ? g.pendingSerial : g.serial) % kEyeRing], sizeof(uploadEyes));
 				g.fresh = false;
+				haveUpload = true;
+			}
+		}
+		if (haveUpload) {
+			haveUpload = false;
+			if (eyesTex.ensure(s.device(), uploadW, uploadH)) {
+				for (int i = 0; i < 2; i++) {
+					s.context()->UpdateSubresource(eyesTex.tex[i], 0, nullptr, upload[i].data(), (UINT)uploadW * 4, 0);
+				}
+				std::memcpy(submitted, uploadEyes, sizeof(submitted));
+				haveImage = true;
 			}
 		}
 		s.endFrame(haveImage ? eyesTex.tex[0] : nullptr, haveImage ? eyesTex.tex[1] : nullptr, eyesTex.w, eyesTex.h,
@@ -737,16 +759,31 @@ DXRH_API int dxrh_window_size(int *width, int *height)
 DXRH_API int dxrh_submit_rgba8(const uint8_t *left, const uint8_t *right, int width, int height, int stride,
                                uint32_t serial)
 {
-	if (left == nullptr || right == nullptr || width <= 0 || height <= 0 || stride < width * 4) {
+	if (left == nullptr || right == nullptr || width <= 0 || height <= 0 ||
+	    std::llabs((long long)stride) < (long long)width * 4) {
 		return -1;
 	}
-	std::lock_guard<std::mutex> lock(g.mutex);
+	// Copy outside the mutex into recycled buffers, then hand both eyes over
+	// together in one swap, so the 3D thread never waits on the copy.
+	std::vector<uint8_t> buf[2];
+	{
+		std::lock_guard<std::mutex> lock(g.mutex);
+		std::swap(buf[0], g.spare[0]);
+		std::swap(buf[1], g.spare[1]);
+	}
 	const uint8_t *src[2] = {left, right};
+	const size_t row = (size_t)width * 4;
 	for (int i = 0; i < 2; i++) {
-		g.pending[i].resize((size_t)width * height * 4);
+		buf[i].resize(row * height);
 		for (int y = 0; y < height; y++) {
-			std::memcpy(g.pending[i].data() + (size_t)y * width * 4, src[i] + (size_t)y * stride, (size_t)width * 4);
+			// Row y of the image (top first); a negative stride walks up from the last row.
+			std::memcpy(buf[i].data() + (size_t)y * row, src[i] + (ptrdiff_t)y * stride, row);
 		}
+	}
+	std::lock_guard<std::mutex> lock(g.mutex);
+	for (int i = 0; i < 2; i++) {
+		std::swap(buf[i], g.pending[i]);
+		g.spare[i] = std::move(buf[i]); // the pair it replaces, for reuse
 	}
 	g.pendingW = width;
 	g.pendingH = height;
