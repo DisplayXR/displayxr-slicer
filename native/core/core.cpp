@@ -418,7 +418,8 @@ void threadMain(std::promise<std::string> *started)
 		}
 
 		EyeView eyes[2]{};
-		if (!s.beginFrame(cam, cw, ch, eyes)) {
+		bool located = false;
+		if (!s.beginFrame(cam, cw, ch, eyes, &located)) {
 			setStatus(s.status());
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 			continue;
@@ -426,8 +427,12 @@ void threadMain(std::promise<std::string> *started)
 
 		{
 			std::lock_guard<std::mutex> lock(g.mutex);
-			g.serial++;
-			std::memcpy(g.eyes[g.serial % kEyeRing], eyes, sizeof(eyes));
+			// New eyes only when located: a failed locate keeps the serial, so the
+			// adapter renders nothing new; the frame is still ended below.
+			if (located) {
+				g.serial++;
+				std::memcpy(g.eyes[g.serial % kEyeRing], eyes, sizeof(eyes));
+			}
 			g.renderW = s.renderWidth();
 			g.renderH = s.renderHeight();
 			g.windowW = cw;

@@ -436,8 +436,9 @@ void Session3D::pollEvents()
 	}
 }
 
-bool Session3D::beginFrame(const CameraInput &cam, int canvasW, int canvasH, EyeView eyes[2])
+bool Session3D::beginFrame(const CameraInput &cam, int canvasW, int canvasH, EyeView eyes[2], bool *located)
 {
+	*located = false;
 	pollEvents();
 	if (!running_ || frameBegun_) {
 		return false;
@@ -494,12 +495,23 @@ bool Session3D::beginFrame(const CameraInput &cam, int canvasW, int canvasH, Eye
 	XrViewState vs{XR_TYPE_VIEW_STATE};
 	XrView views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
 	uint32_t n = 0;
-	if (XR_SUCCEEDED(xrLocateViews_(session_, &li, &vs, 2, &n, views)) && n >= 2) {
+	const XrResult lr = xrLocateViews_(session_, &li, &vs, 2, &n, views);
+	if (XR_SUCCEEDED(lr) && n >= 2) {
 		for (int i = 0; i < 2; i++) {
-			eyes[i].pose = views[i].pose;
-			eyes[i].fov = views[i].fov;
+			lastEyes_[i].pose = views[i].pose;
+			lastEyes_[i].fov = views[i].fov;
+		}
+		*located = true;
+	} else {
+		static int logged = 0;
+		if (logged++ < 3) {
+			logLine("xrLocateViews failed: %d (%u views); keeping the last eyes", (int)lr, n);
 		}
 	}
+	// A failed locate keeps the last good eyes: zeroed ones are a degenerate
+	// frustum (zero tangents) for the adapter.
+	eyes[0] = lastEyes_[0];
+	eyes[1] = lastEyes_[1];
 	return true;
 }
 

@@ -74,7 +74,10 @@ public:
 	ID3D11DeviceContext *context() const { return context_; }
 
 	// Per frame: returns true when a frame was begun; then always endFrame().
-	bool beginFrame(const CameraInput &cam, int canvasW, int canvasH, EyeView eyes[2]);
+	// `eyes` = this frame's located views; if xrLocateViews failed, the last
+	// good ones (zero before any) and *located is false: don't hand those out
+	// as new eyes.
+	bool beginFrame(const CameraInput &cam, int canvasW, int canvasH, EyeView eyes[2], bool *located);
 	// Copies the eye textures (RGBA8 sRGB bytes, at least renderWidth x
 	// renderHeight) into the swapchain and submits them with `views`, the eyes
 	// they were rendered from. Null textures end the frame with no layer.
@@ -116,6 +119,7 @@ private:
 	bool frameBegun_ = false;
 	uint64_t frames_ = 0;
 	XrFrameState frame_{XR_TYPE_FRAME_STATE};
+	EyeView lastEyes_[2]{}; // last views xrLocateViews returned
 
 	float displayW_ = 0, displayH_ = 0, viewerZ_ = 0.6f, viewerY_ = 0.0f;
 	float viewScaleX_ = 1, viewScaleY_ = 1;
