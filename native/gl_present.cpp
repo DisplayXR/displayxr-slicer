@@ -65,7 +65,7 @@ struct State
 	HANDLE glDev = nullptr, glObj = nullptr;
 	GLuint glTex = 0, readFbo = 0;
 	void *handle = nullptr; // shared handle the objects above were made for
-	bool failed = false;
+	void *failedHandle = nullptr; // shared handle that could not be opened: not retried
 	int drawn = 0, mismatched = 0;
 	char info[512] = "";
 } s;
@@ -127,7 +127,6 @@ void closeShared()
 		s.tex = nullptr;
 	}
 	s.handle = nullptr;
-	s.failed = false;
 }
 
 bool openShared(void *handle)
@@ -141,6 +140,9 @@ bool openShared(void *handle)
 		}
 		s.glDev = s.open(s.dev);
 		if (s.glDev == nullptr) {
+			// Drop the device too, or the next attempt would register on a null GL device.
+			s.dev->Release();
+			s.dev = nullptr;
 			note("wglDXOpenDeviceNV failed (GL and D3D on different GPUs?)");
 			return false;
 		}
@@ -176,18 +178,25 @@ __declspec(dllexport) int dxs_present(void)
 		if (s.glObj != nullptr) {
 			closeShared(); // 3D stopped: release on VTK's context
 		}
+		s.failedHandle = nullptr; // the next session tries again
 		return 0;
 	}
 	if (!load()) {
 		return -1;
 	}
 	if (handle != s.handle) {
+		if (handle == s.failedHandle) {
+			return -1; // already failed for this texture (see dxs_info); not retried every render
+		}
 		closeShared();
 		if (!openShared(handle)) {
-			s.failed = true;
+			closeShared(); // what was opened before the failure
+			s.failedHandle = handle;
+			return -1;
 		}
+		s.failedHandle = nullptr;
 	}
-	if (s.failed || s.glObj == nullptr) {
+	if (s.glObj == nullptr) {
 		return -1;
 	}
 	void *ref = nullptr;
@@ -247,7 +256,11 @@ __declspec(dllexport) int dxs_present(void)
 }
 
 // Releases the GL objects; call with VTK's context current (after Stop 3D).
-__declspec(dllexport) void dxs_release(void) { closeShared(); }
+__declspec(dllexport) void dxs_release(void)
+{
+	closeShared();
+	s.failedHandle = nullptr;
+}
 
 // Frames drawn so far.
 __declspec(dllexport) int dxs_drawn(void) { return s.drawn; }
