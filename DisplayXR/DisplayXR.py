@@ -192,6 +192,11 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
         lay.addStretch(1)
         self.logic.statusChanged = self.updateStatus
         self.logic.depthChanged = self.onDepthFromRuntime
+        # Closing Slicer with 3D active: stop the session while the views still exist,
+        # so the host core's thread is joined before its DLL unloads. Once per logic.
+        if not self.logic.quitHooked:
+            slicer.app.aboutToQuit.connect(self.logic.stop)
+            self.logic.quitHooked = True
         self.updateStatus()
 
     def onBone(self):
@@ -250,6 +255,7 @@ class DisplayXRWidget(ScriptedLoadableModuleWidget):
 
     def cleanup(self):
         self.logic.statusChanged = None
+        self.logic.stop()  # module unloading (Slicer closing): no-op if 3D is off
 
 
 # ----------------------------------------------------------------------------
@@ -274,6 +280,7 @@ class DisplayXRLogic(ScriptedLoadableModuleLogic):
         self.autoScreenPlane = True
         self.clickThrough = True
         self.statusChanged = None
+        self.quitHooked = False    # slicer.app.aboutToQuit -> stop() connected
         self.hostedHwnd = None
         self.rig = None            # rig used by the running session
         self.lastDepth = None      # (front, behind, pushed_back_mm, glass_mm) of the last update

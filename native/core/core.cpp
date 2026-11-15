@@ -63,7 +63,9 @@ struct Shared
 };
 
 Shared g;
-std::thread g_thread;
+// Never destroyed: a host that exits with 3D still running (no dxrh_stop) would
+// otherwise destroy a joinable std::thread at DLL detach, which is std::terminate.
+std::thread &g_thread = *new std::thread;
 std::atomic<bool> g_quit{false};
 std::atomic<bool> g_running{false};
 std::atomic<HWND> g_hwnd{nullptr};
